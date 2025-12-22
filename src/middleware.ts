@@ -3,12 +3,13 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
 export function middleware(request: NextRequest) {
+
   const accessToken = request.cookies.get('accessToken')?.value;
   const path = request.nextUrl.pathname;
 
   // Routes publiques
   const publicPaths = ['/login', '/register', '/forgot-password', '/share'];
-  const isPublicPath = publicPaths.some((p) => path.startsWith(p));
+  const isPublicPath = true;
 
   // Si route protégée et pas de token → redirect login
   if (!isPublicPath && !accessToken) {

@@ -14,7 +14,7 @@ export type SocketEvent =
   | 'offer'
   | 'answer'
   | 'ice_candidate'
-  | 'ice_servers' 
+  | 'ice_servers'
   | 'chat_message'
   | 'typing_start'
   | 'typing_stop'
@@ -25,7 +25,7 @@ export type SocketEvent =
   | 'call_offer'
   | 'call_answer'
   | 'call_end'
-  | 'file_transfer_offer' 
+  | 'file_transfer_offer'
   | 'error';
 
 export interface IceServer {
@@ -40,8 +40,7 @@ export interface IceServersResponse {
 
 export class SocketClient {
   private socket: Socket | null = null;
-  private eventHandlers: Map<SocketEvent, Set<Function>> = new Map();
-  private socketListenersSetup: Set<SocketEvent> = new Set(); // 🆕 Track setup listeners
+  private eventHandlers: Map<SocketEvent, Function[]> = new Map(); // 🆕 Tableau de handlers
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private iceServers: IceServer[] = [];
@@ -65,17 +64,16 @@ export class SocketClient {
     });
 
     this.setupDefaultHandlers();
-    this.setupSocketBridge(); // 🆕 Configure le pont socket->handlers
+    this.setupEventForwarding(); // 🆕 Nouvelle méthode
   }
 
   disconnect(): void {
     if (this.socket) {
       console.log('🔌 Disconnecting from WebSocket server...');
-      this.socket.removeAllListeners(); // 🆕 Nettoyer les listeners socket
+      this.socket.removeAllListeners();
       this.socket.disconnect();
       this.socket = null;
       this.eventHandlers.clear();
-      this.socketListenersSetup.clear(); // 🆕
       this.iceServers = [];
     }
   }
@@ -91,42 +89,147 @@ export class SocketClient {
   }
 
   /**
-   * 🆕 Écouter un événement (version optimisée)
-   * N'installe le listener socket QU'UNE SEULE FOIS
+   * 🆕 Ajouter un handler pour un événement (support multiple)
    */
-  on(event: SocketEvent, handler: Function): void {
-    // Ajouter le handler à notre Map
+  on(event: SocketEvent, handler: Function): () => void {
+    // Initialiser le tableau si besoin
     if (!this.eventHandlers.has(event)) {
-      this.eventHandlers.set(event, new Set());
+      this.eventHandlers.set(event, []);
+
+      // Installer le listener socket.io seulement une fois
+      if (this.socket) {
+        this.socket.on(event, (...args: any[]) => {
+          this.triggerEvent(event, ...args);
+        });
+      }
     }
-    this.eventHandlers.get(event)!.add(handler);
 
-    // Installer le listener socket SEULEMENT si pas déjà fait
-    this.ensureSocketListener(event);
+    // Ajouter le handler
+    const handlers = this.eventHandlers.get(event)!;
+    handlers.push(handler);
 
-    console.log(`✅ Handler registered for '${event}' (total: ${this.eventHandlers.get(event)!.size})`);
+    console.log(`✅ Handler added for '${event}' (total: ${handlers.length})`);
+
+    // Retourner une fonction pour supprimer ce handler spécifique
+    return () => {
+      this.off(event, handler);
+    };
   }
 
+  /**
+   * 🆕 Supprimer un ou tous les handlers
+   */
   off(event: SocketEvent, handler?: Function): void {
+    if (!this.eventHandlers.has(event)) {
+      return;
+    }
+
     if (!handler) {
+      // Supprimer tous les handlers pour cet événement
       this.eventHandlers.delete(event);
       if (this.socket) {
         this.socket.off(event);
-        this.socketListenersSetup.delete(event);
       }
+      console.log(`🧹 All handlers removed for '${event}'`);
     } else {
-      const handlers = this.eventHandlers.get(event);
-      if (handlers) {
-        handlers.delete(handler);
-        if (handlers.size === 0) {
-          this.eventHandlers.delete(event);
-          if (this.socket) {
-            this.socket.off(event);
-            this.socketListenersSetup.delete(event);
-          }
+      // Supprimer un handler spécifique
+      const handlers = this.eventHandlers.get(event)!;
+      const index = handlers.indexOf(handler);
+      if (index > -1) {
+        handlers.splice(index, 1);
+        console.log(`🧹 Handler removed for '${event}' (remaining: ${handlers.length})`);
+      }
+
+      // Si plus de handlers, supprimer le listener socket.io
+      if (handlers.length === 0) {
+        this.eventHandlers.delete(event);
+        if (this.socket) {
+          this.socket.off(event);
         }
       }
     }
+  }
+
+  /**
+   * 🆕 Déclencher tous les handlers pour un événement
+   */
+  private triggerEvent(event: SocketEvent, ...args: any[]): void {
+    const handlers = this.eventHandlers.get(event);
+
+    if (!handlers || handlers.length === 0) {
+      console.warn(`⚠️ Event '${event}' triggered but no handlers registered`);
+      return;
+    }
+
+    console.log(`🔔 Triggering ${handlers.length} handler(s) for '${event}'`);
+
+    // Exécuter tous les handlers de manière asynchrone
+    handlers.forEach((handler, index) => {
+      try {
+        // Utiliser setTimeout pour éviter les blocages
+        setTimeout(() => {
+          handler(...args);
+        }, 0);
+      } catch (error) {
+        console.error(`❌ Error in handler #${index} for '${event}':`, error);
+      }
+    });
+  }
+
+  /**
+   * 🆕 Configurer le forwarding des événements socket.io
+   */
+  private setupEventForwarding(): void {
+    if (!this.socket) return;
+
+    // Pour chaque événement déjà enregistré, installer le listener
+    this.eventHandlers.forEach((_, event) => {
+      this.socket!.on(event, (...args: any[]) => {
+        this.triggerEvent(event, ...args);
+      });
+    });
+  }
+
+  private setupDefaultHandlers(): void {
+    if (!this.socket) return;
+
+    this.socket.on('connect', () => {
+      console.log('✅ Socket connected - ID:', this.socket?.id);
+      this.reconnectAttempts = 0;
+      this.requestIceServers();
+      this.triggerEvent('connect');
+    });
+
+    this.socket.on('disconnect', (reason) => {
+      console.log('🔌 Socket disconnected:', reason);
+      this.triggerEvent('disconnect', reason);
+    });
+
+    this.socket.on('connect_error', (error) => {
+      console.error('❌ Socket connection error:', error);
+      this.reconnectAttempts++;
+
+      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
+        console.error('Max reconnection attempts reached');
+        this.disconnect();
+      }
+    });
+
+    this.socket.on('error', (error) => {
+      console.error('❌ Socket error:', error);
+      this.triggerEvent('error', error);
+    });
+
+    this.socket.on('ice_servers', (data: IceServersResponse) => {
+      this.iceServers = data.iceServers;
+      console.log('✅ ICE servers cached:', this.iceServers.length);
+      this.triggerEvent('ice_servers', data);
+    });
+
+    // 🆕 Logger tous les événements pour debug
+    this.socket.onAny((event, ...args) => {
+      console.log(`📡 Socket event '${event}':`, args);
+    });
   }
 
   isConnected(): boolean {
@@ -161,19 +264,20 @@ export class SocketClient {
         reject(new Error('ICE servers request timeout'));
       }, 5000);
 
-      const handler = (data: IceServersResponse) => {
+      // 🆕 Utiliser la méthode on normale
+      const removeHandler = this.on('ice_servers', (data: IceServersResponse) => {
         clearTimeout(timeout);
         this.iceServers = data.iceServers;
         console.log('✅ ICE servers received:', this.iceServers.length);
-        this.socket?.off('ice_servers', handler);
+        removeHandler(); // Se désinscrire
         resolve(this.iceServers);
-      };
+      });
 
-      this.socket.on('ice_servers', handler);
       this.socket.emit('get_ice_servers');
     });
   }
 
+  // Autres méthodes inchangées...
   async createPeerConnection(
     config?: Partial<RTCConfiguration>
   ): Promise<RTCPeerConnection> {
@@ -218,98 +322,6 @@ export class SocketClient {
 
   sendGroupMessage(groupId: string, message: string): void {
     this.emit('group_chat_message', { groupId, message });
-  }
-
-  /**
-   * 🆕 Installer le listener socket une seule fois par événement
-   */
-  private ensureSocketListener(event: SocketEvent): void {
-    if (!this.socket || this.socketListenersSetup.has(event)) {
-      return; // Déjà installé
-    }
-
-    this.socket.on(event, (...args: any[]) => {
-      console.log(`📥 Received '${event}':`, args);
-      this.triggerHandlers(event, ...args);
-    });
-
-    this.socketListenersSetup.add(event);
-    console.log(`🔧 Socket listener installed for '${event}'`);
-  }
-
-  /**
-   * 🆕 Configure le pont automatique entre socket.io et nos handlers
-   */
-  private setupSocketBridge(): void {
-    if (!this.socket) return;
-
-    // Pour chaque événement déjà enregistré, installer le listener
-    this.eventHandlers.forEach((_, event) => {
-      this.ensureSocketListener(event);
-    });
-  }
-
-  private setupDefaultHandlers(): void {
-    if (!this.socket) return;
-
-    this.socket.on('connect', () => {
-      console.log('✅ Socket connected - ID:', this.socket?.id);
-      this.reconnectAttempts = 0;
-      this.requestIceServers();
-      this.triggerHandlers('connect');
-    });
-
-    this.socket.on('disconnect', (reason) => {
-      console.log('🔌 Socket disconnected:', reason);
-      this.triggerHandlers('disconnect', reason);
-    });
-
-    this.socket.on('connect_error', (error) => {
-      console.error('❌ Socket connection error:', error);
-      this.reconnectAttempts++;
-
-      if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-        console.error('Max reconnection attempts reached');
-        this.disconnect();
-      }
-    });
-
-    this.socket.on('error', (error) => {
-      console.error('❌ Socket error:', error);
-      this.triggerHandlers('error', error);
-    });
-
-    this.socket.on('ice_servers', (data: IceServersResponse) => {
-      this.iceServers = data.iceServers;
-      console.log('✅ ICE servers cached:', this.iceServers.length);
-      this.triggerHandlers('ice_servers', data);
-    });
-
-    // 🆕 Logger tous les événements pour debug
-    this.socket.onAny((event, ...args) => {
-      console.log(`📡 Socket event '${event}':`, args);
-    });
-  }
-
-  private triggerHandlers(event: SocketEvent, ...args: any[]): void {
-    const handlers = this.eventHandlers.get(event);
-    if (!handlers || handlers.size === 0) {
-      console.warn(`⚠️ No handlers for event '${event}'`);
-      return;
-    }
-
-    console.log(`🔔 Triggering ${handlers.size} handler(s) for '${event}'`);
-    
-    // Utiliser requestAnimationFrame pour éviter de bloquer
-    requestAnimationFrame(() => {
-      handlers.forEach((handler) => {
-        try {
-          handler(...args);
-        } catch (error) {
-          console.error(`❌ Error in handler for '${event}':`, error);
-        }
-      });
-    });
   }
 }
 

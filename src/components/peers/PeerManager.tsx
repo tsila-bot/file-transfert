@@ -2,91 +2,109 @@
 
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect } from 'react';
 import { useSocket } from '../../shared/hooks/useSocket';
-import { usePeerStore, Peer } from '@/stores/peerStore';
+import { usePeerStore } from '@/stores/peerStore';
 
 export function PeerManager() {
-    const { on, off, isConnected } = useSocket();
+    const { useEventHandler, isConnected } = useSocket(); // 🆕 Récupérer isConnected
     const store = usePeerStore();
 
-    // 🆕 Stocker le store dans une ref pour accès stable
-    const storeRef = useRef(store);
-    storeRef.current = store;
+    // 🆕 Utiliser le handler avec cleanup automatique
+    useEventHandler('online_users', (data: { users: any[] }) => {
+        console.log('📋 Received online_users event:', data);
 
-    useEffect(() => {
-        console.log('🔍 PeerManager mounted');
-        console.log('🔍 Socket connected?', isConnected());
-
-        if (!isConnected()) {
-            console.warn('⚠️ Socket not connected, waiting...');
-            // 🆕 Attendre que le socket se connecte
-            const checkInterval = setInterval(() => {
-                if (isConnected()) {
-                    console.log('✅ Socket connected, reloading component...');
-                    clearInterval(checkInterval);
-                    window.location.reload(); // Force un re-mount
-                }
-            }, 1000);
-
-            return () => clearInterval(checkInterval);
+        if (!data || !data.users) {
+            console.error('❌ Invalid data in online_users:', data);
+            return;
         }
 
-        console.log('✅ Setting up event listeners...');
+        const usersArray = Array.isArray(data.users)
+            ? data.users
+            : Object.values(data.users);
 
-        // 🆕 Handlers avec accès à storeRef (références stables)
-        const handleOnlineUsers = (data: { users: Peer[] }) => {
-            console.log('📋 Online users received:', data.users.length);
-            console.log('📋 Raw data:', data);
-            storeRef.current.clearPeers();
-            data.users.forEach((user) => {
-                storeRef.current.addPeer({
-                    ...user,
-                    connectedAt: new Date(user.connectedAt),
-                });
+        console.log(`📋 Processing ${usersArray.length} users`);
+
+        store.clearPeers();
+
+        usersArray.forEach((user: any, index: number) => {
+            if (!user || !user.userId || !user.userName) {
+                console.warn(`⚠️ Invalid user at index ${index}:`, user);
+                return;
+            }
+
+            store.addPeer({
+                userId: user.userId,
+                userName: user.userName,
+                status: user.status || 'available',
+                avatar: user.avatar || undefined,
+                connectedAt: user.connectedAt
+                    ? new Date(user.connectedAt)
+                    : new Date(),
             });
-        };
+        });
 
-        const handleUserOnline = (data: { userId: string; userName: string }) => {
-            console.log('🟢 User online:', data.userName);
-            storeRef.current.addPeer({
-                userId: data.userId,
-                userName: data.userName,
-                status: 'available',
-                connectedAt: new Date(),
-            });
-        };
+        console.log(`✅ Store updated with ${store.getOnlinePeers().length} peers`);
+    });
 
-        const handleUserOffline = (data: { userId: string }) => {
-            console.log('🔴 User offline:', data.userId);
-            storeRef.current.removePeer(data.userId);
-        };
+    useEventHandler('user_online', (data: { userId: string; userName: string }) => {
+        console.log('🟢 User online event:', data);
 
-        const handleUserStatusChange = (data: {
-            userId: string;
-            status: Peer['status'];
-        }) => {
-            console.log('📊 User status change:', data.userId, data.status);
-            storeRef.current.updatePeerStatus(data.userId, data.status);
-        };
+        if (!data.userId || !data.userName) {
+            console.error('❌ Invalid user_online data:', data);
+            return;
+        }
 
-        // S'abonner aux événements
-        on('online_users', handleOnlineUsers);
-        on('user_online', handleUserOnline);
-        on('user_offline', handleUserOffline);
-        on('user_status_change', handleUserStatusChange);
+        const existing = store.getPeer(data.userId);
+        if (existing) {
+            console.log(`ℹ️ User ${data.userId} already in store`);
+            return;
+        }
 
-        console.log('✅ All listeners registered');
+        store.addPeer({
+            userId: data.userId,
+            userName: data.userName,
+            status: 'available',
+            connectedAt: new Date(),
+        });
 
-        // Cleanup avec les MÊMES références de fonction
-        return () => {
-            console.log('🧹 Cleaning up listeners');
-            off('online_users', handleOnlineUsers);
-            off('user_online', handleUserOnline);
-            off('user_offline', handleUserOffline);
-            off('user_status_change', handleUserStatusChange);
-        };
-    }, [on, off, isConnected]); // 🆕 Seulement on, off, isConnected
+        console.log(`✅ Added new user: ${data.userName}`);
+    });
 
-    return null;
+    useEventHandler('user_offline', (data: { userId: string }) => {
+        console.log('🔴 User offline event:', data);
+
+        if (!data.userId) {
+            console.error('❌ Invalid user_offline data:', data);
+            return;
+        }
+
+        store.removePeer(data.userId);
+        console.log(`✅ Removed user: ${data.userId}`);
+    });
+
+    useEventHandler('user_status_change', (data: {
+        userId: string;
+        status: 'available' | 'busy' | 'in_call' | 'transferring';
+    }) => {
+        console.log('📊 User status change event:', data);
+
+        if (!data.userId || !data.status) {
+            console.error('❌ Invalid status_change data:', data);
+            return;
+        }
+
+        store.updatePeerStatus(data.userId, data.status);
+        console.log(`✅ Updated status for ${data.userId} to ${data.status}`);
+    });
+
+    // 🔍 Debug UI
+    return (
+        <div className="fixed bottom-4 right-4 z-50">
+            <div className="bg-black bg-opacity-75 text-white text-xs p-2 rounded-lg">
+                <div>Socket: {isConnected() ? '✅' : '❌'}</div> {/* 🆕 Utiliser isConnected() */}
+                <div>Peers: {store.getOnlinePeers().length}</div>
+            </div>
+        </div>
+    );
 }

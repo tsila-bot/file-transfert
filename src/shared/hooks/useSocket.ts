@@ -7,59 +7,99 @@ import { useAuthStore } from '@/stores/authStore';
 export function useSocket() {
   const { accessToken, isAuthenticated } = useAuthStore();
   const socketClient = useRef(getSocketClient());
-  
-  // 🆕 Stocker la référence pour éviter les re-connexions
-  const lastTokenRef = useRef<string | null>(null);
+  const cleanupRef = useRef<(() => void)[]>([]); // 🆕 Stocker les fonctions de cleanup
 
-  useEffect(() => {
-    // Se connecter si authentifié et pas encore connecté
+  const connect = useCallback(() => {
     if (isAuthenticated && accessToken && !socketClient.current.isConnected()) {
       console.log('🔌 Connecting socket...');
       socketClient.current.connect(accessToken);
-      lastTokenRef.current = accessToken;
-    }
-
-    // Se déconnecter si plus authentifié
-    if (!isAuthenticated && socketClient.current.isConnected()) {
-      console.log('🔌 Disconnecting socket...');
-      socketClient.current.disconnect();
-      lastTokenRef.current = null;
-    }
-
-    // 🆕 Reconnecter si le token change (changement d'utilisateur)
-    if (
-      isAuthenticated && 
-      accessToken && 
-      lastTokenRef.current !== accessToken && 
-      socketClient.current.isConnected()
-    ) {
-      console.log('🔄 Token changed, reconnecting...');
-      socketClient.current.disconnect();
-      socketClient.current.connect(accessToken);
-      lastTokenRef.current = accessToken;
     }
   }, [isAuthenticated, accessToken]);
 
-  // 🆕 Mémoïser les fonctions pour qu'elles gardent la même référence
+  const disconnect = useCallback(() => {
+    if (socketClient.current.isConnected()) {
+      console.log('🔌 Disconnecting socket...');
+      socketClient.current.disconnect();
+    }
+  }, []);
+
+  // 🆕 Fonction wrapper pour on avec cleanup automatique
+  const on = useCallback((event: SocketEvent, handler: Function) => {
+    const cleanup = socketClient.current.on(event, handler);
+    cleanupRef.current.push(cleanup);
+    return cleanup;
+  }, []);
+
+  // 🆕 Fonction wrapper pour off
+  const off = useCallback((event: SocketEvent, handler?: Function) => {
+    socketClient.current.off(event, handler);
+
+    // Retirer de la liste de cleanup
+    if (handler) {
+      cleanupRef.current = cleanupRef.current.filter(fn => {
+        // Comparer les références de fonction
+        try {
+          fn(); // Tester si c'est la bonne fonction
+          return true;
+        } catch {
+          return false;
+        }
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    connect();
+
+    // Nettoyage à la fin
+    return () => {
+      console.log('🧹 Cleaning up socket listeners');
+
+      // Exécuter toutes les fonctions de cleanup
+      cleanupRef.current.forEach(cleanup => {
+        try {
+          cleanup();
+        } catch (error) {
+          console.error('Error in cleanup function:', error);
+        }
+      });
+      cleanupRef.current = [];
+
+      // Se déconnecter si besoin
+      if (socketClient.current.isConnected()) {
+        disconnect();
+      }
+    };
+  }, [connect, disconnect]);
+
+  // 🆕 API mémoïsée
   const api = useMemo(() => ({
     emit: (event: string, data?: any) => {
       socketClient.current.emit(event, data);
     },
-    
-    on: (event: SocketEvent, handler: Function) => {
-      socketClient.current.on(event, handler);
-    },
-    
-    off: (event: SocketEvent, handler?: Function) => {
-      socketClient.current.off(event, handler);
-    },
-    
+
+    on,
+
+    off,
+
     isConnected: () => {
       return socketClient.current.isConnected();
     },
-    
+
     socket: socketClient.current,
-  }), []); // ⚠️ Dépendances vides = mêmes références toujours
+
+    // 🆕 Méthodes utilitaires
+    connect,
+    disconnect,
+
+    // 🆕 Gestion des événements avec cleanup automatique dans useEffect
+    useEventHandler: (event: SocketEvent, handler: Function) => {
+      useEffect(() => {
+        const cleanup = on(event, handler);
+        return cleanup;
+      }, [event, handler, on]);
+    }
+  }), [on, off, connect, disconnect]);
 
   return api;
 }
