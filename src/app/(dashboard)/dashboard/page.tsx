@@ -13,7 +13,7 @@ export default function DashboardPage() {
 
             <h1 className="text-3xl font-bold mb-8">Dashboard</h1>
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="flex flex-row items-start justify-start gap-6">
                 {/* Liste des pairs en ligne */}
                 <div className="lg:col-span-1">
                     <div className="bg-white rounded-lg shadow p-4">
@@ -23,10 +23,17 @@ export default function DashboardPage() {
                 </div>
 
                 {/* Zone principale */}
-                <div className="lg:col-span-2">
+                <div className="lg:col-span-2 w-[850px] h-[500px]">
                     <div className="bg-white rounded-lg shadow p-6">
-                        <h2 className="text-xl font-semibold mb-4">Zone de transfert</h2>
+                        <h2 className="text-xl font-semibold mb-4 text-black">Zone de transfert</h2>
                         {/* TODO: Composant de transfert */}
+                    </div>
+                </div>
+
+                {/* Liste des pairs en ligne */}
+                <div className="lg:col-span-1  w-[300px] h-[500px]">
+                    <div className="bg-white rounded-lg shadow p-4">
+                        <h2 className="text-xl font-semibold mb-4">Utilisateurs en ligne</h2>
                     </div>
                 </div>
             </div>
