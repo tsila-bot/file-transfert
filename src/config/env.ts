@@ -8,12 +8,16 @@ export const ENV = {
   // WebRTC
   STUN_SERVERS: (process.env.NEXT_PUBLIC_STUN_SERVERS || '')
     .split(',')
-    .map((url) => ({ urls: url.trim() })),
-  TURN_SERVER: {
-    urls: process.env.NEXT_PUBLIC_TURN_URL || 'turn:localhost:3478',
-    username: process.env.NEXT_PUBLIC_TURN_USERNAME || 'webdevin',
-    credential: process.env.NEXT_PUBLIC_TURN_PASSWORD || 'password',
-  },
+    .map((url) => url.trim())
+    .filter((url) => url.length > 0)
+    .map((url) => ({ urls: url })),
+  TURN_SERVER: process.env.NEXT_PUBLIC_TURN_URL
+    ? {
+      urls: process.env.NEXT_PUBLIC_TURN_URL,
+      username: process.env.NEXT_PUBLIC_TURN_USERNAME,
+      credential: process.env.NEXT_PUBLIC_TURN_PASSWORD,
+    }
+    : null,
 
 
   // Feature Flags

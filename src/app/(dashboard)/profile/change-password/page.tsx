@@ -4,7 +4,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { usersAPI } from '@/app/core/services/api/users.service';
+import { usersAPI } from '@/core/services/api/users.service';
 import Link from 'next/link';
 
 export default function ChangePasswordPage() {

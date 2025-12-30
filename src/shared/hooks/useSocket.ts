@@ -49,6 +49,7 @@ export function useSocket() {
   }, []);
 
   useEffect(() => {
+    // Connect only after auth initialization; connect may be a no-op if not authenticated
     connect();
 
     // Nettoyage à la fin

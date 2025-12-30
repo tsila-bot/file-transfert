@@ -1,6 +1,7 @@
 // app/layout.tsx
 import type { Metadata } from 'next';
 import './globals.css';
+import AuthInitializer from '@/components/AuthInitializer';
 
 export const metadata: Metadata = {
   title: 'P2P Transfer',
@@ -15,6 +16,7 @@ export default function RootLayout({
   return (
     <html lang="fr">
       <body className="bg-gray-50 text-gray-900 antialiased">
+        <AuthInitializer />
         {children}
       </body>
     </html>

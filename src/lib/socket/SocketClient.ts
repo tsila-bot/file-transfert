@@ -44,6 +44,7 @@ export class SocketClient {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private iceServers: IceServer[] = [];
+  private forwardedEvents: Set<SocketEvent> = new Set();
 
   connect(token: string): void {
     if (this.socket?.connected) {
@@ -51,7 +52,9 @@ export class SocketClient {
       return;
     }
 
-    console.log('🔌 Connecting to WebSocket server...');
+    // Log masked token for debugging (do not log full token in production)
+    const masked = token ? `${token.slice(0, 6)}...${token.slice(-6)}` : 'no-token';
+    console.log('🔌 Connecting to WebSocket server... token=', masked);
 
     this.socket = io(ENV.WS_URL, {
       auth: { token },
@@ -65,6 +68,8 @@ export class SocketClient {
 
     this.setupDefaultHandlers();
     this.setupEventForwarding(); // 🆕 Nouvelle méthode
+
+    // If server immediately rejects auth, keep socket instance for reconnect attempts
   }
 
   disconnect(): void {
@@ -75,6 +80,7 @@ export class SocketClient {
       this.socket = null;
       this.eventHandlers.clear();
       this.iceServers = [];
+      this.forwardedEvents.clear();
     }
   }
 
@@ -95,20 +101,26 @@ export class SocketClient {
     // Initialiser le tableau si besoin
     if (!this.eventHandlers.has(event)) {
       this.eventHandlers.set(event, []);
-
-      // Installer le listener socket.io seulement une fois
-      if (this.socket) {
-        this.socket.on(event, (...args: any[]) => {
-          this.triggerEvent(event, ...args);
-        });
-      }
     }
 
-    // Ajouter le handler
-    const handlers = this.eventHandlers.get(event)!;
-    handlers.push(handler);
+    // Installer le listener socket.io seulement si le socket existe
+    // et si l'événement n'a pas déjà été forwardé (éviter doublons)
+    if (this.socket && !this.forwardedEvents.has(event)) {
+      this.socket.on(event, (...args: any[]) => {
+        this.triggerEvent(event, ...args);
+      });
+      this.forwardedEvents.add(event);
+    }
 
-    console.log(`✅ Handler added for '${event}' (total: ${handlers.length})`);
+    // Ajouter le handler (éviter les doublons pour le même handler)
+    const handlers = this.eventHandlers.get(event)!;
+    if (handlers.indexOf(handler) !== -1) {
+      console.warn(`Handler for '${event}' already registered`);
+    } else {
+      handlers.push(handler);
+    }
+
+    console.log(`✅ Handler registered for '${event}' (total: ${handlers.length})`);
 
     // Retourner une fonction pour supprimer ce handler spécifique
     return () => {
@@ -130,6 +142,7 @@ export class SocketClient {
       if (this.socket) {
         this.socket.off(event);
       }
+      this.forwardedEvents.delete(event);
       console.log(`🧹 All handlers removed for '${event}'`);
     } else {
       // Supprimer un handler spécifique
@@ -145,6 +158,7 @@ export class SocketClient {
         this.eventHandlers.delete(event);
         if (this.socket) {
           this.socket.off(event);
+          this.forwardedEvents.delete(event);
         }
       }
     }
@@ -184,9 +198,11 @@ export class SocketClient {
 
     // Pour chaque événement déjà enregistré, installer le listener
     this.eventHandlers.forEach((_, event) => {
+      if (this.forwardedEvents.has(event)) return;
       this.socket!.on(event, (...args: any[]) => {
         this.triggerEvent(event, ...args);
       });
+      this.forwardedEvents.add(event);
     });
   }
 

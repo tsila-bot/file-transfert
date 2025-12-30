@@ -20,7 +20,7 @@ interface AuthState {
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
   clearError: () => void;
-  // ✅ NOUVEAU: Initialiser depuis le storage
+  //  NOUVEAU: Initialiser depuis le storage
   initializeAuth: () => Promise<void>;
 }
 
@@ -38,7 +38,7 @@ export const useAuthStore = create<AuthState>()(
         try {
           const response = await authAPI.register(data);
 
-          // ✅ Plus besoin de localStorage séparé, persist s'en charge
+          // Plus besoin de localStorage séparé, persist s'en charge
           set({
             user: response.user,
             accessToken: response.accessToken,
@@ -58,7 +58,7 @@ export const useAuthStore = create<AuthState>()(
         try {
           const response = await authAPI.login(data);
 
-          // ✅ Plus besoin de localStorage séparé
+          //  Plus besoin de localStorage séparé
           set({
             user: response.user,
             accessToken: response.accessToken,
@@ -79,7 +79,7 @@ export const useAuthStore = create<AuthState>()(
         } catch (error) {
           console.error('Logout error:', error);
         } finally {
-          // ✅ persist va automatiquement nettoyer le storage
+          //  persist va automatiquement nettoyer le storage
           set({
             user: null,
             accessToken: null,
@@ -90,9 +90,9 @@ export const useAuthStore = create<AuthState>()(
       },
 
       refreshUser: async () => {
-        // ✅ Utiliser le token du state, pas localStorage
+        //  Utiliser le token du state, pas localStorage
         const { accessToken } = get();
-        
+
         if (!accessToken) {
           set({ isAuthenticated: false });
           return;
@@ -106,7 +106,7 @@ export const useAuthStore = create<AuthState>()(
           });
         } catch (error) {
           console.error('Failed to refresh user:', error);
-          // ✅ Token invalide, déconnecter
+          //  Token invalide, déconnecter
           set({
             user: null,
             accessToken: null,
@@ -115,12 +115,12 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      // ✅ NOUVEAU: Initialiser l'auth au démarrage de l'app
+      //  NOUVEAU: Initialiser l'auth au démarrage de l'app
       initializeAuth: async () => {
         const { accessToken } = get();
-        
+
         if (accessToken) {
-          console.log('🔐 Initializing auth from storage...');
+          console.log(' Initializing auth from storage...');
           try {
             await get().refreshUser();
           } catch (error) {
@@ -133,7 +133,7 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'auth-storage',
-      // ✅ Persister user et token
+      //  Persister user et token
       partialize: (state) => ({
         user: state.user,
         accessToken: state.accessToken,
