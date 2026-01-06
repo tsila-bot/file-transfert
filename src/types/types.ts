@@ -15,6 +15,8 @@ export interface PeerConnectionOptions {
   onDataChannelClose?: () => void;
   onData?: (data: any) => void;
   onError?: (error: Error) => void;
+  connectionTimeout?: number; // override default connection timeout (ms)
+  maxRetries?: number; // number of automatic reconnect attempts on timeout/failure
 }
 
 export interface ConnectionStats {

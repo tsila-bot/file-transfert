@@ -903,6 +903,15 @@ export class TransferEngine {
           ? this.base64ToArrayBuffer(chunkData)
           : chunkData;
 
+      try {
+        const view = new Uint8Array(arrayBuffer);
+        const snippet = Array.from(view.subarray(0, Math.min(8, view.length))).
+          map((b) => b.toString(16).padStart(2, '0')).join(' ');
+        console.log(`📥 handleChunk ${fileId}#${index}: ${view.byteLength} bytes, first8: ${snippet} (base64=${typeof chunkData === 'string'})`);
+      } catch (e) {
+        console.log(`📥 handleChunk ${fileId}#${index}: received ${arrayBuffer.byteLength} bytes`);
+      }
+
       await chunkManager.receiveChunk({
         index,
         data: arrayBuffer,
@@ -1097,6 +1106,15 @@ export class TransferEngine {
         }
       } catch (err) {
         // ignore if feature not available
+      }
+
+      try {
+        const view = new Uint8Array(chunk.data);
+        const snippet = Array.from(view.subarray(0, Math.min(8, view.length))).
+          map((b) => b.toString(16).padStart(2, '0')).join(' ');
+        console.log(`📤 sendChunk ${fileId}#${chunk.index}: ${view.byteLength} bytes, first8: ${snippet}`);
+      } catch (e) {
+        console.log(`📤 sendChunk ${fileId}#${chunk.index}`);
       }
 
       const base64Data = this.arrayBufferToBase64(chunk.data);

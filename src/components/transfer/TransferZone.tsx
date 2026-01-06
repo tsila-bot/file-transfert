@@ -104,7 +104,7 @@ export default function TransferZone() {
 	}, [manager, password, selectedPeer, connectedPeers])
 
 	return (
-		<div className="p-4">
+		<div className="p-4 text-black">
 			<h2 className="text-lg font-semibold mb-2">Transfert de fichiers</h2>
 
 			<div className="mb-3">
@@ -112,7 +112,7 @@ export default function TransferZone() {
 				<select
 					value={selectedPeer ?? ''}
 					onChange={(e) => setSelectedPeer(e.target.value || null)}
-					className="border rounded p-2 w-full"
+					className="border rounded p-2 w-full text-black"
 				>
 					<option value="">-- Sélectionner un pair --</option>
 					{connectedPeers.map((p) => (
@@ -138,7 +138,7 @@ export default function TransferZone() {
 					type="password"
 					value={password}
 					onChange={(e) => setPassword(e.target.value)}
-					className="border rounded p-2"
+					className="border rounded p-2 text-black"
 				/>
 				<label className="flex items-center gap-2 ml-4">
 					<input type="checkbox" checked={compress} onChange={(e) => setCompress(e.target.checked)} />

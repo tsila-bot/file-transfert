@@ -161,6 +161,15 @@ export class ChunkManager {
     this.chunks.set(chunk.index, chunkData);
     this.bitmap[chunk.index] = true;
 
+    try {
+      const view = new Uint8Array(chunkData);
+      const snippet = Array.from(view.subarray(0, Math.min(8, view.length))).
+        map((b) => b.toString(16).padStart(2, '0')).join(' ');
+      console.log(`📥 Received chunk ${chunk.index}: ${view.byteLength} bytes, first8: ${snippet}`);
+    } catch (e) {
+      console.log(`📥 Received chunk ${chunk.index}: ${chunkData.byteLength} bytes`);
+    }
+
     return true;
   }
 
@@ -202,8 +211,30 @@ export class ChunkManager {
         );
       }
 
-      const decompressed = await this.decompressChunk(new Uint8Array(chunkData));
-      decompressedChunks.push(decompressed);
+      // Debug: log chunk before decompression
+      try {
+        const view = new Uint8Array(chunkData);
+        const snippet = Array.from(view.subarray(0, Math.min(8, view.length))).
+          map((b) => b.toString(16).padStart(2, '0')).join(' ');
+        console.log(`🔧 Decompressing chunk ${i}: ${view.byteLength} bytes, first8: ${snippet}, decrypted=${!!decryptionKey}`);
+      } catch (e) {
+        console.log(`🔧 Decompressing chunk ${i}`);
+      }
+
+      try {
+        const decompressed = await this.decompressChunk(new Uint8Array(chunkData));
+        decompressedChunks.push(decompressed);
+      } catch (err) {
+        try {
+          const view = new Uint8Array(chunkData);
+          const snippet = Array.from(view.subarray(0, Math.min(8, view.length))).
+            map((b) => b.toString(16).padStart(2, '0')).join(' ');
+          console.error(`❌ Decompression failed for chunk ${i}:`, err, 'first8:', snippet);
+        } catch (e) {
+          console.error(`❌ Decompression failed for chunk ${i}:`, err);
+        }
+        throw err;
+      }
 
       // Afficher progression
       if ((i + 1) % 100 === 0 || i === this.metadata.totalChunks - 1) {

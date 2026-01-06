@@ -6,6 +6,7 @@ import {
   DATA_CHANNEL_CONFIG,
   CONNECTION_TIMEOUT,
   HEARTBEAT_INTERVAL,
+  MAX_RECONNECT_ATTEMPTS,
 } from '../../config/webrtc';
 import { getSocketClient } from '../../lib/socket/SocketClient';
 import {
@@ -20,6 +21,13 @@ export class PeerConnection extends EventEmitter {
   private peerConnection: RTCPeerConnection | null = null;
   private dataChannel: RTCDataChannel | null = null;
   private pendingIceCandidates: RTCIceCandidateInit[] = [];
+  private sendQueue: Array<string | ArrayBuffer | Blob> = [];
+  private readonly MAX_SEND_QUEUE = 200;
+  private readonly MAX_PENDING_ICE = 200;
+  private connectionTimeoutMs: number;
+  private maxRetries: number;
+  private retryAttempts: number = 0;
+  private retryDelayMs: number = 1500;
   private peerId: string;
   private peerName: string;
   private isInitiator: boolean;
@@ -33,6 +41,8 @@ export class PeerConnection extends EventEmitter {
     this.peerId = options.peerId;
     this.peerName = options.peerName;
     this.isInitiator = options.isInitiator;
+    this.connectionTimeoutMs = options.connectionTimeout ?? CONNECTION_TIMEOUT;
+    this.maxRetries = options.maxRetries ?? MAX_RECONNECT_ATTEMPTS;
 
     if (options.onStateChange) {
       this.on('statechange', options.onStateChange);
@@ -159,7 +169,47 @@ export class PeerConnection extends EventEmitter {
 
     console.log('📥 Received answer');
 
-    await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+    try {
+      const signalingState = this.peerConnection.signalingState;
+      if (signalingState === 'closed') {
+        console.warn('PeerConnection closed - ignoring answer');
+        return;
+      }
+
+      // If already stable and remote description is an answer, skip
+      const remoteDesc = this.peerConnection.remoteDescription;
+      if (signalingState === 'stable' && remoteDesc && remoteDesc.type === 'answer') {
+        console.log('Remote answer already set, skipping');
+        return;
+      }
+
+      await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+
+      // Flush any pending ICE candidates now that remote description is set
+      if (this.pendingIceCandidates.length > 0) {
+        for (const c of [...this.pendingIceCandidates]) {
+          try {
+            await this.peerConnection.addIceCandidate(new RTCIceCandidate(c));
+            console.log('✅ ICE candidate applied from pending queue (after answer)');
+            // remove candidate from queue
+            const idx = this.pendingIceCandidates.indexOf(c);
+            if (idx >= 0) this.pendingIceCandidates.splice(idx, 1);
+          } catch (err) {
+            console.warn('Failed to apply pending ICE candidate after answer:', err);
+          }
+        }
+      }
+    } catch (error: any) {
+      const msg = String(error && error.message ? error.message : error);
+      if (msg.includes('Cannot set remote answer in state stable')) {
+        console.warn('Cannot set remote answer in state stable — ignoring');
+        return;
+      }
+
+      console.error('Failed to handle answer:', error);
+      this.emit('error', error);
+      throw error;
+    }
   }
 
   /**
@@ -172,16 +222,38 @@ export class PeerConnection extends EventEmitter {
         return;
       }
 
+      if (this.pendingIceCandidates.length >= this.MAX_PENDING_ICE) {
+        console.warn('Pending ICE queue full, dropping oldest candidate');
+        this.pendingIceCandidates.shift();
+      }
       this.pendingIceCandidates.push(candidate);
       console.log('⏳ ICE candidate queued (peerConnection not ready)');
+      return;
+    }
+
+    // If remote description is not set yet, queue the candidate to avoid "Unknown ufrag"
+    const remoteDesc = this.peerConnection.remoteDescription;
+    if (!remoteDesc || !remoteDesc.type) {
+      if (this.pendingIceCandidates.length >= this.MAX_PENDING_ICE) {
+        console.warn('Pending ICE queue full, dropping oldest candidate');
+        this.pendingIceCandidates.shift();
+      }
+      this.pendingIceCandidates.push(candidate);
+      console.log('⏳ ICE candidate queued (remoteDescription not set)');
       return;
     }
 
     try {
       await this.peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
       console.log('✅ ICE candidate added');
-    } catch (error) {
+    } catch (error: any) {
+      const msg = String(error && error.message ? error.message : error);
       console.warn('Failed to add ICE candidate:', error);
+      // If the error indicates unknown ufrag or similar race, queue for later
+      if (msg.includes('Unknown ufrag') || msg.includes('Unknown')) {
+        this.pendingIceCandidates.push(candidate);
+        console.log('⏳ ICE candidate re-queued due to add error');
+      }
     }
   }
 
@@ -190,13 +262,26 @@ export class PeerConnection extends EventEmitter {
    */
   send(data: string | ArrayBuffer | Blob): void {
     if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
-      throw new Error('Data channel not open');
+      // Queue the message for later send when the data channel opens.
+      console.warn('Data channel not open, queueing message');
+      if (this.sendQueue.length >= this.MAX_SEND_QUEUE) {
+        console.warn('Send queue full, dropping oldest message');
+        this.sendQueue.shift();
+      }
+      this.sendQueue.push(data);
+      return;
     }
 
     try {
       this.dataChannel.send(data as any);
     } catch (error) {
       console.error('Failed to send data:', error);
+      // If send fails, keep the message for a retry and surface error
+      if (this.sendQueue.length >= this.MAX_SEND_QUEUE) {
+        console.warn('Send queue full, dropping oldest message');
+        this.sendQueue.shift();
+      }
+      this.sendQueue.push(data);
       this.emit('error', error);
     }
   }
@@ -205,7 +290,13 @@ export class PeerConnection extends EventEmitter {
    * Envoyer un message structuré
    */
   sendMessage(message: Message): void {
-    this.send(JSON.stringify(message));
+    try {
+      const payload = JSON.stringify(message);
+      this.send(payload);
+    } catch (error) {
+      console.error('Failed to serialize/send message:', error);
+      this.emit('error', error);
+    }
   }
 
   /**
@@ -374,7 +465,8 @@ export class PeerConnection extends EventEmitter {
           break;
         case 'failed':
           this.updateState('failed');
-          this.emit('error', new Error('Connection failed'));
+          // Try reconnecting automatically before emitting final error
+          this.attemptReconnect(new Error('Connection failed'));
           break;
         case 'closed':
           this.updateState('closed');
@@ -405,6 +497,22 @@ export class PeerConnection extends EventEmitter {
     this.dataChannel.onopen = () => {
       console.log('✅ Data channel opened');
       this.emit('datachannel:open');
+      // Flush any queued messages
+      try {
+        while (this.sendQueue.length > 0 && this.dataChannel && this.dataChannel.readyState === 'open') {
+          const queued = this.sendQueue.shift()!;
+          try {
+            this.dataChannel.send(queued as any);
+          } catch (err) {
+            console.error('Failed to flush queued message:', err);
+            // Put back and stop flushing to avoid busy loop
+            this.sendQueue.unshift(queued);
+            break;
+          }
+        }
+      } catch (err) {
+        console.error('Error while flushing send queue:', err);
+      }
     };
 
     this.dataChannel.onclose = () => {
@@ -418,7 +526,12 @@ export class PeerConnection extends EventEmitter {
     };
 
     this.dataChannel.onmessage = (event) => {
-      this.handleMessage(event.data);
+      try {
+        this.handleMessage(event.data);
+      } catch (err) {
+        console.error('Unhandled error in message handler:', err);
+        this.emit('error', err as any);
+      }
     };
 
     this.dataChannel.onbufferedamountlow = () => {
@@ -532,13 +645,14 @@ export class PeerConnection extends EventEmitter {
    * Démarrer le timeout de connexion
    */
   private startConnectionTimeout(): void {
+    this.clearConnectionTimeout();
     this.connectionTimeout = setTimeout(() => {
       if (this.connectionState === 'connecting') {
         console.error('⏱️ Connection timeout');
-        this.updateState('failed');
-        this.emit('error', new Error('Connection timeout'));
+        // Attempt reconnect if allowed
+        this.attemptReconnect(new Error('Connection timeout'));
       }
-    }, CONNECTION_TIMEOUT);
+    }, this.connectionTimeoutMs);
   }
 
   /**
@@ -548,6 +662,66 @@ export class PeerConnection extends EventEmitter {
     if (this.connectionTimeout) {
       clearTimeout(this.connectionTimeout);
       this.connectionTimeout = null;
+    }
+  }
+
+  /**
+   * Cleanup peer connection and data channel resources without removing event listeners
+   */
+  private cleanupPeerResources(): void {
+    this.stopHeartbeat();
+    this.clearConnectionTimeout();
+
+    if (this.dataChannel) {
+      try {
+        this.dataChannel.onopen = null;
+        this.dataChannel.onclose = null;
+        this.dataChannel.onerror = null;
+        this.dataChannel.onmessage = null;
+        this.dataChannel.close();
+      } catch (e) {
+        // ignore
+      }
+      this.dataChannel = null;
+    }
+
+    if (this.peerConnection) {
+      try {
+        this.peerConnection.onicecandidate = null;
+        this.peerConnection.onconnectionstatechange = null;
+        this.peerConnection.oniceconnectionstatechange = null;
+        this.peerConnection.onicecandidateerror = null;
+        this.peerConnection.ondatachannel = null;
+        this.peerConnection.close();
+      } catch (e) {
+        // ignore
+      }
+      this.peerConnection = null;
+    }
+  }
+
+  private attemptReconnect(cause?: Error): void {
+    if (this.retryAttempts < this.maxRetries) {
+      this.retryAttempts += 1;
+      console.log(`🔁 Attempting reconnect ${this.retryAttempts}/${this.maxRetries} after:`, cause?.message || cause);
+
+      // Cleanup current resources but keep event listeners
+      this.cleanupPeerResources();
+
+      setTimeout(async () => {
+        try {
+          await this.initialize();
+        } catch (err) {
+          console.warn('Reconnect attempt failed:', err);
+          // Try again
+          this.attemptReconnect(err as Error);
+        }
+      }, this.retryDelayMs * this.retryAttempts);
+    } else {
+      console.error('Max reconnect attempts reached, failing connection');
+      this.updateState('failed');
+      const err = cause || new Error('Connection failed after retries');
+      this.emit('error', err);
     }
   }
 

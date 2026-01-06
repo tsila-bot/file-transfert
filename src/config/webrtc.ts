@@ -30,6 +30,7 @@ export const DATA_CHANNEL_CONFIG: RTCDataChannelInit = {
 };
 
 // Constantes
-export const CONNECTION_TIMEOUT = 300000; // 30 secondes
+// Increase default connection timeout to 10 minutes (ms)
+export const CONNECTION_TIMEOUT = 600000; // 10 minutes
 export const HEARTBEAT_INTERVAL = 5000; // 5 secondes
 export const MAX_RECONNECT_ATTEMPTS = 3;
