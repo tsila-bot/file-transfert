@@ -777,6 +777,17 @@ export class TransferEngine {
     this.connection.on('resume_ack', (data: any) => {
       this.handleResumeAck(data);
     });
+
+    // Resume sending when peer signals bufferedamountlow (backpressure relieved)
+    this.connection.on('bufferedamountlow', () => {
+      try {
+        for (const fileId of this.activeSends) {
+          this.sendNextChunks(fileId);
+        }
+      } catch (err) {
+        console.warn('Error while handling bufferedamountlow event', err);
+      }
+    });
   }
 
   /**
@@ -1053,7 +1064,11 @@ export class TransferEngine {
     if (!this.activeSends.has(fileId)) return;
 
     const inFlight = pendingAcks.size;
-    const canSend = this.MAX_CONCURRENT_CHUNKS - inFlight;
+    // adapt concurrency based on chunkManager worker availability when possible
+    const cm = this.chunkManagers.get(fileId);
+    const workerAvailable = cm ? (cm.getStats().workerPool?.available ?? this.MAX_CONCURRENT_CHUNKS) : this.MAX_CONCURRENT_CHUNKS;
+    const dynamicLimit = Math.max(1, Math.min(this.MAX_CONCURRENT_CHUNKS, workerAvailable));
+    const canSend = dynamicLimit - inFlight;
 
     if (canSend <= 0) {
       return;
@@ -1070,15 +1085,10 @@ export class TransferEngine {
       return;
     }
 
-    for (let i = 0; i < chunksToSend.length; i++) {
-      const chunkToSend = chunksToSend[i];
-
-      if (i > 0) {
-        await this.sleep(this.CHUNK_SEND_INTERVAL);
-      }
-
-      this.sendChunk(fileId, chunkToSend);
-    }
+    // schedule sends with small stagger to avoid bursts
+    chunksToSend.forEach((chunkToSend, idx) => {
+      setTimeout(() => this.sendChunk(fileId, chunkToSend), idx * this.CHUNK_SEND_INTERVAL);
+    });
   }
 
   /**

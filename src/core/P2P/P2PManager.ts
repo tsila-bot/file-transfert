@@ -103,9 +103,9 @@ export class P2PManager {
 
     // Mark this peer as active in the global peer store (incoming accept)
     try {
-      usePeerStore.getState().setActivePeer(peerId);
+      usePeerStore.getState().addActivePeer(peerId);
     } catch (err) {
-      console.warn('Failed to set active peer in peerStore:', err);
+      console.warn('Failed to add active peer in peerStore:', err);
     }
 
     try {

@@ -1,6 +1,6 @@
 // app/(dashboard)/dashboard/page.tsx
 
- 'use client';
+'use client';
 
 import Link from 'next/link'
 import { useState, useRef, ChangeEvent, DragEvent } from 'react';
@@ -13,6 +13,7 @@ import { PeerList } from '@/components/peers/PeerList';
 // Types TypeScript
 type FileStatus = 'uploading' | 'success' | 'error';
 
+// ✅ MODIFIÉ: Ajout de recipientId et recipientName
 interface FileItem {
     id: string;
     name: string;
@@ -21,6 +22,8 @@ interface FileItem {
     progress: number;
     status: FileStatus;
     error?: string | null;
+    recipientId?: string;      // ✅ NOUVEAU
+    recipientName?: string;    // ✅ NOUVEAU
 }
 
 interface FileTypeInfo {
@@ -33,8 +36,11 @@ export default function DashboardPage() {
     const [isDragging, setIsDragging] = useState<boolean>(false);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const peerStore = usePeerStore();
-    const activePeerId = peerStore.activePeerId;
-    const activePeerName = activePeerId ? peerStore.getPeer(activePeerId)?.userName : null;
+
+    // ✅ CHANGÉ: Utiliser activePeerIds au lieu de activePeerId
+    const activePeerIds = peerStore.activePeerIds;
+    const activePeers = peerStore.getActivePeers();
+    const activePeerNames = activePeers.map(p => p.userName).join(', ');
 
     // Types de fichiers avec leurs couleurs et icônes
     const fileTypes: Record<string, FileTypeInfo> = {
@@ -48,79 +54,72 @@ export default function DashboardPage() {
         default: { color: 'bg-indigo-100 text-indigo-600', icon: '📎' }
     };
 
-    // Simuler le transfert P2P
-    const simulateP2PTransfer = (file: File, peerId: string | null) => {
-        const fileType = file.type.split('/')[0] || 'default';
-        const fileObj: FileItem = {
-            id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-            name: file.name,
-            size: file.size,
-            type: fileType,
-            progress: 0,
-            status: 'uploading',
-            error: null
-        };
-
-        setFiles(prev => [...prev, fileObj]);
-
-        if (!peerId) {
-            // Si aucun pair n'est sélectionné
-            setTimeout(() => {
-                setFiles(prev => prev.map(f =>
-                    f.id === fileObj.id
-                        ? {
-                            ...f,
-                            progress: 100,
-                            status: 'error',
-                            error: 'Sélectionnez un destinataire'
-                        }
-                        : f
-                ));
-            }, 500);
+    // ✅ MODIFIÉ: Accepte un array de peerIds
+    const simulateP2PTransfer = (file: File, peerIds: string[]) => {
+        if (peerIds.length === 0) {
+            alert('Aucun destinataire sélectionné');
             return;
         }
 
-        // Simulation de progression P2P
-        let progress = 0;
-        const interval = setInterval(() => {
-            progress += Math.random() * 15 + 5; // Progression variable
-            if (progress >= 100) {
-                progress = 100;
-                clearInterval(interval);
+        // ✅ CHANGÉ: Créer UN transfert par peer
+        peerIds.forEach(peerId => {
+            const peer = peerStore.getPeer(peerId);
+            const fileType = file.type.split('/')[0] || 'default';
 
-                // Simuler un succès ou une erreur
-                const success = Math.random() > 0.15; // 85% de succès
-                setFiles(prev => prev.map(f =>
-                    f.id === fileObj.id
-                        ? {
-                            ...f,
-                            progress: 100,
-                            status: success ? 'success' : 'error',
-                            error: success ? null : 'Échec de connexion P2P'
-                        }
-                        : f
-                ));
-            } else {
-                setFiles(prev => prev.map(f =>
-                    f.id === fileObj.id ? { ...f, progress: Math.min(progress, 100) } : f
-                ));
-            }
-        }, 300);
+            const fileObj: FileItem = {
+                id: `${Date.now()}-${peerId}-${Math.random().toString(36).substr(2, 9)}`,
+                name: file.name,
+                size: file.size,
+                type: fileType,
+                progress: 0,
+                status: 'uploading',
+                error: null,
+                recipientId: peerId,
+                recipientName: peer?.userName || 'Unknown',
+            };
+
+            setFiles(prev => [...prev, fileObj]);
+
+            // Simulation de progression P2P
+            let progress = 0;
+            const interval = setInterval(() => {
+                progress += Math.random() * 15 + 5;
+                if (progress >= 100) {
+                    progress = 100;
+                    clearInterval(interval);
+
+                    const success = Math.random() > 0.15;
+                    setFiles(prev => prev.map(f =>
+                        f.id === fileObj.id
+                            ? {
+                                ...f,
+                                progress: 100,
+                                status: success ? 'success' : 'error',
+                                error: success ? null : `Échec vers ${peer?.userName}`
+                            }
+                            : f
+                    ));
+                } else {
+                    setFiles(prev => prev.map(f =>
+                        f.id === fileObj.id ? { ...f, progress: Math.min(progress, 100) } : f
+                    ));
+                }
+            }, 300);
+        });
     };
 
-    // Gérer la sélection de fichiers
+    // ✅ MODIFIÉ: Vérifier activePeerIds.length
     const handleFileSelect = (selectedFiles: FileList): void => {
-        if (!activePeerId) {
-            alert('Veuillez d\'abord sélectionner un destinataire dans la liste des utilisateurs en ligne');
+        if (activePeerIds.length === 0) {
+            alert('Veuillez sélectionner au moins un destinataire dans la liste des utilisateurs connectés');
             return;
         }
 
         Array.from(selectedFiles).forEach(file => {
-            simulateP2PTransfer(file, activePeerId);
+            simulateP2PTransfer(file, activePeerIds);
         });
     };
 
-    // Gérer le drag & drop
     const handleDragOver = (e: DragEvent<HTMLDivElement>): void => {
         e.preventDefault();
         setIsDragging(true);
@@ -138,10 +137,10 @@ export default function DashboardPage() {
         handleFileSelect(droppedFiles);
     };
 
-    // Gérer le clic sur la zone de dépôt
+    // ✅ MODIFIÉ: Vérifier activePeerIds.length
     const handleClick = (): void => {
-        if (!activePeerId) {
-            alert('Veuillez d\'abord sélectionner un destinataire dans la liste des utilisateurs en ligne');
+        if (activePeerIds.length === 0) {
+            alert('Veuillez sélectionner au moins un destinataire dans la liste des utilisateurs connectés');
             return;
         }
 
@@ -150,7 +149,6 @@ export default function DashboardPage() {
         }
     };
 
-    // Gérer le changement d'input fichier
     const handleFileChange = (e: ChangeEvent<HTMLInputElement>): void => {
         if (e.target.files && e.target.files.length > 0) {
             handleFileSelect(e.target.files);
@@ -158,12 +156,10 @@ export default function DashboardPage() {
         }
     };
 
-    // Supprimer un fichier
     const removeFile = (id: string): void => {
         setFiles(prev => prev.filter(file => file.id !== id));
     };
 
-    // Formater la taille du fichier
     const formatFileSize = (bytes: number): string => {
         if (bytes === 0) return '0 Bytes';
         const k = 1024;
@@ -172,12 +168,10 @@ export default function DashboardPage() {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     };
 
-    // Obtenir les infos du type de fichier
     const getFileTypeInfo = (type: string): FileTypeInfo => {
         return fileTypes[type] || fileTypes.default;
     };
 
-    // Calculer les statistiques
     const totalFiles = files.length;
     const uploadedFiles = files.filter(f => f.status === 'success').length;
     const uploadingFiles = files.filter(f => f.status === 'uploading').length;
@@ -189,14 +183,32 @@ export default function DashboardPage() {
                 <div>
                     <h2 className="text-xl font-semibold mb-2 text-black">Transfert P2P</h2>
                     <div className="mt-2">
-                        <Link href="/transfert" className="text-sm text-blue-600 hover:underline">Ouvrir la page Transfert</Link>
+                        <Link href="/transfert" className="text-sm text-blue-600 hover:underline">
+                            Ouvrir la page Transfert
+                        </Link>
                     </div>
+
+                    {/* ✅ MODIFIÉ: Affichage multi-destinataires */}
                     <p className="text-gray-600 text-sm">
-                        {activePeerName
-                            ? `Transfert vers: ${activePeerName}`
-                            : 'Sélectionnez un destinataire à gauche'
-                        }
+                        {activePeerIds.length === 0 && 'Sélectionnez des destinataires à gauche'}
+                        {activePeerIds.length === 1 && `Transfert vers: ${activePeerNames}`}
+                        {activePeerIds.length > 1 && `Transfert vers ${activePeerIds.length} destinataires: ${activePeerNames}`}
                     </p>
+
+                    {/* ✅ NOUVEAU: Badge avec nombre de destinataires */}
+                    {activePeerIds.length > 0 && (
+                        <div className="mt-2 flex items-center gap-2">
+                            <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-800">
+                                {activePeerIds.length} destinataire{activePeerIds.length > 1 ? 's' : ''}
+                            </span>
+                            <button
+                                onClick={() => peerStore.clearActivePeers()}
+                                className="text-xs text-red-500 hover:text-red-700"
+                            >
+                                Tout désélectionner
+                            </button>
+                        </div>
+                    )}
                 </div>
 
                 <div className="mt-4 lg:mt-0 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg p-3 border border-blue-100">
@@ -217,12 +229,10 @@ export default function DashboardPage() {
                 </div>
             </div>
 
-            {/* Zone de dépôt principale */}
             <div className="mb-6">
                 <TransferZone />
             </div>
 
-            {/* Liste des fichiers (section scrollable) */}
             <div className="space-y-3 flex-1 overflow-hidden flex flex-col">
                 <div className="flex justify-between items-center mb-3">
                     <h3 className="text-lg font-semibold text-gray-800">Transferts en cours</h3>
@@ -243,9 +253,10 @@ export default function DashboardPage() {
                             <File className="w-7 h-7 text-gray-400" />
                         </div>
                         <p className="text-gray-500">Aucun transfert en cours</p>
+                        {/* ✅ MODIFIÉ */}
                         <p className="text-sm text-gray-400">
-                            {!activePeerName
-                                ? 'Sélectionnez un destinataire'
+                            {activePeerIds.length === 0
+                                ? 'Sélectionnez des destinataires'
                                 : 'Ajoutez des fichiers pour commencer'
                             }
                         </p>
@@ -268,22 +279,29 @@ export default function DashboardPage() {
 
                                             <div className="flex-1 min-w-0">
                                                 <div className="flex items-center justify-between mb-1">
-                                                    <p className="font-medium text-gray-800 truncate text-sm" title={file.name}>
-                                                        {file.name}
-                                                    </p>
+                                                    {/* ✅ MODIFIÉ: Afficher le destinataire */}
+                                                    <div className="flex-1 min-w-0">
+                                                        <p className="font-medium text-gray-800 truncate text-sm" title={file.name}>
+                                                            {file.name}
+                                                        </p>
+                                                        {file.recipientName && (
+                                                            <p className="text-xs text-gray-500">
+                                                                → {file.recipientName}
+                                                            </p>
+                                                        )}
+                                                    </div>
                                                     <span className="text-xs text-gray-500 ml-2 shrink-0">
                                                         {formatFileSize(file.size)}
                                                     </span>
                                                 </div>
 
-                                                {/* Barre de progression */}
                                                 <div className="w-full bg-gray-200 rounded-full h-1.5 mb-1.5">
                                                     <div
                                                         className={`h-full rounded-full transition-all duration-300 ${file.status === 'success'
-                                                                ? 'bg-green-500'
-                                                                : file.status === 'error'
-                                                                    ? 'bg-red-500'
-                                                                    : 'bg-gradient-to-r from-blue-500 to-indigo-600'
+                                                            ? 'bg-green-500'
+                                                            : file.status === 'error'
+                                                                ? 'bg-red-500'
+                                                                : 'bg-gradient-to-r from-blue-500 to-indigo-600'
                                                             }`}
                                                         style={{ width: `${file.progress}%` }}
                                                     />
@@ -292,10 +310,10 @@ export default function DashboardPage() {
                                                 <div className="flex items-center justify-between">
                                                     <div className="flex items-center space-x-2">
                                                         <span className={`text-xs font-medium ${file.status === 'success'
-                                                                ? 'text-green-600'
-                                                                : file.status === 'error'
-                                                                    ? 'text-red-600'
-                                                                    : 'text-blue-600'
+                                                            ? 'text-green-600'
+                                                            : file.status === 'error'
+                                                                ? 'text-red-600'
+                                                                : 'text-blue-600'
                                                             }`}>
                                                             {file.status === 'uploading' && `${Math.round(file.progress)}%`}
                                                             {file.status === 'success' && 'Terminé'}
@@ -344,5 +362,4 @@ export default function DashboardPage() {
             </div>
         </div>
     </div>
-
 }

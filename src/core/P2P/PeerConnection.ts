@@ -433,6 +433,14 @@ export class PeerConnection extends EventEmitter {
       DATA_CHANNEL_CONFIG
     );
 
+    // Set a bufferedAmountLowThreshold so the onbufferedamountlow event fires
+    try {
+      // choose a threshold (1MB) lower than typical buffer limit used by sender
+      (this.dataChannel as any).bufferedAmountLowThreshold = 1 * 1024 * 1024;
+    } catch (err) {
+      // ignore if not supported in the environment
+    }
+
     this.setupDataChannelHandlers();
   }
 
