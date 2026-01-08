@@ -37,6 +37,7 @@ export class TransferEngine {
   // Gestion des chunks à envoyer par fichier
   private sendQueues: Map<string, ChunkToSend[]> = new Map();
   private pendingAcks: Map<string, Set<number>> = new Map();
+  private chunksInFlight: Map<string, Set<number>> = new Map(); // Track chunks currently being sent to prevent duplicates
   private activeSends: Set<string> = new Set();
   // Buffer for chunks received before metadata/transfer is initialized
   private pendingChunkBuffer: Map<string, any[]> = new Map();
@@ -44,8 +45,8 @@ export class TransferEngine {
   // Configuration
   private readonly MAX_RETRIES = 3;
   private readonly RETRY_TIMEOUT = 5000;
-  private readonly MAX_CONCURRENT_CHUNKS = 5;
-  private readonly CHUNK_SEND_INTERVAL = 50;
+  private readonly MAX_CONCURRENT_CHUNKS = 4;
+  private readonly CHUNK_SEND_INTERVAL = 0;
   private readonly MAX_CONCURRENT_TRANSFERS = 3;
 
   // Propriétés pour la reprise
@@ -55,13 +56,17 @@ export class TransferEngine {
   private isConnectionHealthy: boolean = true;
 
   // Configuration de la reprise
-  private readonly HEARTBEAT_INTERVAL = 5000;
-  private readonly HEARTBEAT_TIMEOUT = 15000;
+  private readonly HEARTBEAT_INTERVAL = 30000; // Increased from 5000 to 30000 (30 seconds)
+  private readonly HEARTBEAT_TIMEOUT = 60000; // Increased from 15000 to 60000 (60 seconds)
   private readonly AUTO_SAVE_EVERY = 10;
   private readonly MAX_RESUME_ATTEMPTS = 3;
 
   // État des transferts en cours de reprise
+  private chunkProducersFinished: Set<string> = new Set();
   private resumingTransfers: Set<string> = new Set();
+  private lastSyncTime: Map<string, number> = new Map(); // Track last sync time per transfer
+  private lastSyncProgress: Map<string, number> = new Map(); // Track last sync progress per transfer
+  private readonly SYNC_THROTTLE_MS = 10000; // Minimum 10 seconds between sync messages per transfer
 
   private startTime: number = 0;
   private bytesTransferred: number = 0;
@@ -85,6 +90,53 @@ export class TransferEngine {
     setInterval(() => {
       this.checkHeartbeatTimeout();
     }, 1000);
+  }
+
+  /**
+   * Démarrer le producteur de chunks en streaming
+   */
+  private async startChunkProducer(fileId: string, chunkGenerator: AsyncGenerator<Chunk, void, unknown>): Promise<void> {
+    const queue = this.sendQueues.get(fileId);
+    if (!queue) return;
+
+    try {
+      for await (const chunk of chunkGenerator) {
+        if (chunk.index === -1 && (chunk as any).metadata) {
+          // Special completion signal with final metadata
+          const finalMetadata = (chunk as any).metadata;
+          this.connection.sendMessage({
+            type: 'metadata_update',
+            data: { fileId, fileHash: finalMetadata.fileHash },
+          });
+          console.log(`📤 Sent metadata update with fileHash for ${fileId}`);
+          this.chunkProducersFinished.add(fileId);
+          console.log(`✅ Chunk producer finished for ${fileId}`);
+          break; // End of chunks
+        }
+
+        // Wait if queue is too full to prevent memory explosion
+        const MAX_QUEUE_SIZE = 100; // Limit queued chunks to prevent memory issues
+        while (queue.length >= MAX_QUEUE_SIZE) {
+          await new Promise(resolve => setTimeout(resolve, 10)); // Wait 10ms
+        }
+
+        queue.push({
+          chunk,
+          retries: 0,
+          lastSentAt: 0,
+        });
+
+        // Trigger sending as soon as we have chunks available
+        this.sendNextChunks(fileId);
+      }
+    } catch (error) {
+      console.error(`❌ Error in chunk producer for ${fileId}:`, error);
+      const transfer = this.transfers.get(fileId);
+      if (transfer) {
+        transfer.status = 'failed';
+        this.emitTransferUpdate(transfer);
+      }
+    }
   }
 
   /**
@@ -166,17 +218,37 @@ export class TransferEngine {
    * Synchroniser les états des transferts avec le pair
    */
   private async syncTransferStates(peerTransferIds: string[]): Promise<void> {
+    const now = Date.now();
+    
     for (const transferId of peerTransferIds) {
+      const lastSync = this.lastSyncTime.get(transferId) || 0;
+      
+      // Throttle sync messages to prevent flooding
+      if (now - lastSync < this.SYNC_THROTTLE_MS) {
+        continue;
+      }
+      
       const ourState = await getTransferState(transferId);
       if (ourState && ourState.transfer.status === 'active') {
+        const lastProgress = this.lastSyncProgress.get(transferId) || 0;
+        const currentProgress = ourState.transfer.progress.percentage;
+        
+        // Only send sync if progress has changed significantly (at least 1%)
+        if (Math.abs(currentProgress - lastProgress) < 1) {
+          continue;
+        }
+        
         this.connection.sendMessage({
           type: 'transfer_sync',
           data: {
             transferId,
             receivedChunks: ourState.receivedChunks,
-            progress: ourState.transfer.progress.percentage,
+            progress: currentProgress,
           },
         });
+        
+        this.lastSyncTime.set(transferId, now);
+        this.lastSyncProgress.set(transferId, currentProgress);
       }
     }
   }
@@ -439,6 +511,7 @@ export class TransferEngine {
 
     this.sendQueues.set(fileId, chunksToSend);
     this.pendingAcks.set(fileId, new Set());
+    this.chunksInFlight.set(fileId, new Set());
 
     this.startSending(fileId);
   }
@@ -560,6 +633,16 @@ export class TransferEngine {
   ): Promise<string> {
     console.log(`📤 Starting file transfer: ${file.name}`);
 
+    // Check if connection is ready
+    if (!this.connection.isConnected()) {
+      throw new Error('Peer connection is not established. Please wait for the connection to be fully established.');
+    }
+
+    // Check if data channels are ready
+    if (!this.connection.areDataChannelsReady()) {
+      throw new Error('Data channels are not ready. Please wait for the connection to be fully established.');
+    }
+
     const activeCount = this.getActiveTransfersCount();
     if (activeCount >= this.MAX_CONCURRENT_TRANSFERS) {
       throw new Error(
@@ -568,17 +651,15 @@ export class TransferEngine {
     }
 
     const chunkManager = new ChunkManager();
-    const { chunks, metadata } = await chunkManager.splitFile(file, options);
+    const { metadata, chunkGenerator } = await chunkManager.splitFile(file, options);
 
     this.chunkManagers.set(metadata.fileId, chunkManager);
 
-    const chunkQueue: ChunkToSend[] = chunks.map((chunk) => ({
-      chunk,
-      retries: 0,
-      lastSentAt: 0,
-    }));
+    // Initialize empty queue - chunks will be added as they are produced
+    const chunkQueue: ChunkToSend[] = [];
     this.sendQueues.set(metadata.fileId, chunkQueue);
     this.pendingAcks.set(metadata.fileId, new Set());
+    this.chunksInFlight.set(metadata.fileId, new Set());
 
     const transfer: Transfer = {
       id: metadata.fileId,
@@ -604,6 +685,9 @@ export class TransferEngine {
     };
 
     this.transfers.set(metadata.fileId, transfer);
+
+    // Start the streaming chunk producer
+    this.startChunkProducer(metadata.fileId, chunkGenerator);
 
     this.connection.sendMessage({
       type: 'metadata',
@@ -746,6 +830,10 @@ export class TransferEngine {
       this.handleMetadata(data);
     });
 
+    this.connection.on('metadata_update', (data: any) => {
+      this.handleMetadataUpdate(data);
+    });
+
     this.connection.on('chunk', (data: any) => {
       this.handleChunk(data);
     });
@@ -877,6 +965,25 @@ export class TransferEngine {
   }
 
   /**
+   * Gérer les mises à jour de métadonnées
+   */
+  private handleMetadataUpdate(data: any): void {
+    const { fileId, fileHash } = data;
+    const chunkManager = this.chunkManagers.get(fileId);
+    const transfer = this.transfers.get(fileId);
+
+    if (chunkManager && transfer) {
+      // Update the metadata with the final fileHash
+      const metadata = chunkManager['metadata'];
+      if (metadata) {
+        metadata.fileHash = fileHash;
+        transfer.fileHash = fileHash;
+        console.log(`📥 Updated metadata with fileHash for ${fileId}`);
+      }
+    }
+  }
+
+  /**
    * Gérer un chunk reçu
    */
   private async handleChunk(data: any): Promise<void> {
@@ -909,16 +1016,13 @@ export class TransferEngine {
     }
 
     try {
-      const arrayBuffer =
-        typeof chunkData === 'string'
-          ? this.base64ToArrayBuffer(chunkData)
-          : chunkData;
+      const arrayBuffer = chunkData as ArrayBuffer;
 
       try {
         const view = new Uint8Array(arrayBuffer);
         const snippet = Array.from(view.subarray(0, Math.min(8, view.length))).
           map((b) => b.toString(16).padStart(2, '0')).join(' ');
-        console.log(`📥 handleChunk ${fileId}#${index}: ${view.byteLength} bytes, first8: ${snippet} (base64=${typeof chunkData === 'string'})`);
+        console.log(`📥 handleChunk ${fileId}#${index}: ${view.byteLength} bytes, first8: ${snippet}`);
       } catch (e) {
         console.log(`📥 handleChunk ${fileId}#${index}: received ${arrayBuffer.byteLength} bytes`);
       }
@@ -960,8 +1064,14 @@ export class TransferEngine {
     const { fileId, index, received } = ack;
 
     const pendingAcks = this.pendingAcks.get(fileId);
+    const inFlight = this.chunksInFlight.get(fileId);
+    
     if (pendingAcks) {
       pendingAcks.delete(index);
+    }
+    
+    if (inFlight) {
+      inFlight.delete(index);
     }
 
     if (received) {
@@ -981,6 +1091,10 @@ export class TransferEngine {
       this.sendNextChunks(fileId);
     } else {
       console.warn(`❌ Chunk ${index} NACK received, scheduling retry...`);
+      // Remove from in-flight so it can be retried
+      if (inFlight) {
+        inFlight.delete(index);
+      }
       this.retryChunk(fileId, index);
     }
   }
@@ -1067,7 +1181,18 @@ export class TransferEngine {
     // adapt concurrency based on chunkManager worker availability when possible
     const cm = this.chunkManagers.get(fileId);
     const workerAvailable = cm ? (cm.getStats().workerPool?.available ?? this.MAX_CONCURRENT_CHUNKS) : this.MAX_CONCURRENT_CHUNKS;
-    const dynamicLimit = Math.max(1, Math.min(this.MAX_CONCURRENT_CHUNKS, workerAvailable));
+    
+    // Reduce concurrency for large files to prevent memory explosion
+    const fileSizeGB = transfer.fileSize / (1024 * 1024 * 1024);
+    let maxConcurrent = this.MAX_CONCURRENT_CHUNKS;
+    if (fileSizeGB > 1) {
+      maxConcurrent = Math.max(1, Math.floor(this.MAX_CONCURRENT_CHUNKS / 2)); // Half for files > 1GB
+    }
+    if (fileSizeGB > 5) {
+      maxConcurrent = Math.max(1, Math.floor(this.MAX_CONCURRENT_CHUNKS / 4)); // Quarter for files > 5GB
+    }
+    
+    const dynamicLimit = Math.max(1, Math.min(maxConcurrent, workerAvailable));
     const canSend = dynamicLimit - inFlight;
 
     if (canSend <= 0) {
@@ -1079,8 +1204,11 @@ export class TransferEngine {
       .slice(0, canSend);
 
     if (chunksToSend.length === 0) {
-      if (pendingAcks.size === 0) {
+      if (pendingAcks.size === 0 && this.chunkProducersFinished.has(fileId)) {
+        console.log(`🎯 All chunks sent and acknowledged, completing transfer ${fileId}`);
         await this.completeTransfer(fileId);
+      } else if (pendingAcks.size === 0 && !this.chunkProducersFinished.has(fileId)) {
+        console.log(`⏳ Waiting for chunk producer to finish for ${fileId} (${pendingAcks.size} pending ACKs)`);
       }
       return;
     }
@@ -1097,21 +1225,35 @@ export class TransferEngine {
   private sendChunk(fileId: string, chunkToSend: ChunkToSend): void {
     const { chunk, retries } = chunkToSend;
     const pendingAcks = this.pendingAcks.get(fileId);
+    const inFlight = this.chunksInFlight.get(fileId);
 
-    if (!pendingAcks) return;
+    if (!pendingAcks || !inFlight) return;
+
+    // Prevent sending duplicate chunks
+    if (inFlight.has(chunk.index)) {
+      console.warn(`⚠️ Chunk ${chunk.index} already in flight, skipping duplicate send`);
+      return;
+    }
 
     try {
       console.log(
         `📦 Sending chunk ${chunk.index}/${this.transfers.get(fileId)?.progress.chunksTotal} (retry: ${retries})`
       );
 
-      // Throttle if data channel buffer is too high to avoid SCTP send failures
+      // Validate chunk data integrity before sending
+      if (!chunk.data || chunk.data.byteLength === 0) {
+        console.error(`❌ Invalid chunk data for chunk ${chunk.index}`);
+        this.retryChunk(fileId, chunk.index);
+        return;
+      }
+
+      // Check if data channel buffer is too high - if so, wait for bufferedamountlow event
       try {
         const buffered = (this.connection as any).getBufferedAmount?.();
-        const BUFFER_LIMIT = 2 * 1024 * 1024; // 2 MB
+        const BUFFER_LIMIT = 4 * 1024 * 1024; // 4 MB - match bufferedAmountLowThreshold
         if (typeof buffered === 'number' && buffered > BUFFER_LIMIT) {
-          console.warn(`⚠️ Data channel bufferedAmount ${buffered} > ${BUFFER_LIMIT}, delaying send`);
-          setTimeout(() => this.sendChunk(fileId, chunkToSend), 200);
+          console.warn(`⚠️ Data channel bufferedAmount ${buffered} > ${BUFFER_LIMIT}, waiting for buffer relief`);
+          // Don't send this chunk now - wait for bufferedamountlow event to resume
           return;
         }
       } catch (err) {
@@ -1122,25 +1264,27 @@ export class TransferEngine {
         const view = new Uint8Array(chunk.data);
         const snippet = Array.from(view.subarray(0, Math.min(8, view.length))).
           map((b) => b.toString(16).padStart(2, '0')).join(' ');
-        console.log(`📤 sendChunk ${fileId}#${chunk.index}: ${view.byteLength} bytes, first8: ${snippet}`);
+        console.log(`📤 sendChunk ${fileId}#${chunk.index}: ${view.byteLength} bytes, hash: ${chunk.hash}, first8: ${snippet}`);
       } catch (e) {
-        console.log(`📤 sendChunk ${fileId}#${chunk.index}`);
+        console.log(`📤 sendChunk ${fileId}#${chunk.index}: hash: ${chunk.hash}`);
       }
 
-      const base64Data = this.arrayBufferToBase64(chunk.data);
+      const transfer = this.transfers.get(fileId);
+      const totalChunks = transfer?.progress.chunksTotal || 0;
 
-      this.connection.sendMessage({
-        type: 'chunk',
-        data: {
+      this.connection.sendChunk(
+        {
           fileId,
           index: chunk.index,
+          totalChunks,
           hash: chunk.hash,
-          data: base64Data,
           encryptionMetadata: chunk.encryptionMetadata,
         },
-      });
+        chunk.data
+      );
 
       pendingAcks.add(chunk.index);
+      inFlight.add(chunk.index);
       chunkToSend.lastSentAt = Date.now();
     } catch (error) {
       console.error(`Failed to send chunk ${chunk.index}:`, error);
@@ -1178,6 +1322,10 @@ export class TransferEngine {
         if (chunkToSend && now - chunkToSend.lastSentAt > this.RETRY_TIMEOUT) {
           console.warn(`⏱️ Chunk ${chunkIndex} timeout, retrying...`);
           pendingAcks.delete(chunkIndex);
+          const inFlight = this.chunksInFlight.get(fileId);
+          if (inFlight) {
+            inFlight.delete(chunkIndex);
+          }
           this.retryChunk(fileId, chunkIndex);
         }
       });
@@ -1302,11 +1450,22 @@ export class TransferEngine {
    * Nettoyer un transfert
    */
   private cleanupTransfer(fileId: string): void {
+    const chunkManager = this.chunkManagers.get(fileId);
+    if (chunkManager) {
+      chunkManager.destroy().catch(console.error);
+    }
+
     this.sendQueues.delete(fileId);
     this.pendingAcks.delete(fileId);
+    this.chunksInFlight.delete(fileId);
     this.activeSends.delete(fileId);
     this.chunkManagers.delete(fileId);
+    this.transfers.delete(fileId);
     this.decryptionKeys.delete(fileId);
+    this.chunkProducersFinished.delete(fileId);
+    this.lastSyncTime.delete(fileId);
+    this.lastSyncProgress.delete(fileId);
+    this.resumingTransfers.delete(fileId);
     this.clearRetryInterval(fileId);
   }
 
@@ -1341,6 +1500,8 @@ export class TransferEngine {
     this.pendingAcks.clear();
     this.activeSends.clear();
     this.decryptionKeys.clear();
+    this.chunkProducersFinished.clear();
+    this.resumingTransfers.clear();
 
     for (const [fileId, _] of this.retryIntervals) {
       this.clearRetryInterval(fileId);

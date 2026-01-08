@@ -343,6 +343,13 @@ export class TransferManager extends EventEmitter {
   }
 
   /**
+   * Obtenir la connexion d'un peer
+   */
+  getPeerConnection(peerId: string): PeerConnection | undefined {
+    return this.peerConnections.get(peerId);
+  }
+
+  /**
    * Nettoyer tous les transferts terminés
    */
   cleanupCompletedTransfers(): void {

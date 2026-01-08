@@ -4,8 +4,8 @@
 
 import { useState, useEffect } from 'react';
 import { useAuthStore } from '@/stores/authStore';
-import { usersAPI } from '@/app/core/services/api/users.service';
-import { User } from '@/app/core/services/api/auth.service';
+import { usersAPI } from '@/core/services/api/users.service';
+import { User } from '@/core/services/api/auth.service';
 
 export default function ProfilePage() {
   const { user: authUser, refreshUser } = useAuthStore();

@@ -36,6 +36,8 @@ export interface SignalData {
 export type MessageType =
   | 'chat'            // Message de chat
   | 'metadata'        // Métadonnées de fichier
+  | 'metadata_update' // Mise à jour des métadonnées
+  | 'chunk_metadata'  // Métadonnées de chunk
   | 'chunk'           // Morceau de fichier
   | 'ack'             // Accusé de réception général
   | 'heartbeat'       // Ping pour vérifier la connexion

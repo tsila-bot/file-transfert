@@ -19,11 +19,15 @@ import {
 
 export class PeerConnection extends EventEmitter {
   private peerConnection: RTCPeerConnection | null = null;
-  private dataChannel: RTCDataChannel | null = null;
+  private dataChannels: RTCDataChannel[] = [];
   private pendingIceCandidates: RTCIceCandidateInit[] = [];
-  private sendQueue: Array<string | ArrayBuffer | Blob> = [];
-  private readonly MAX_SEND_QUEUE = 200;
+  private sendQueues: Array<Array<string | ArrayBuffer | Blob>> = [];
+  private pendingChunkMetadata: any = null;
+  private readonly MAX_SEND_QUEUE = 500; // Increased from 200 to 500
   private readonly MAX_PENDING_ICE = 200;
+  private readonly NUM_DATA_CHANNELS = 6; // Reduced from 12 to 6 to reduce overhead
+  private readonly MAX_BUFFER_SIZE = 16 * 1024 * 1024; // Increased from 8MB to 16MB
+  private channelIndex = 0;
   private connectionTimeoutMs: number;
   private maxRetries: number;
   private retryAttempts: number = 0;
@@ -88,9 +92,14 @@ export class PeerConnection extends EventEmitter {
         this.createDataChannel();
       } else {
         this.peerConnection.ondatachannel = (event) => {
-          console.log('📥 Data channel received');
-          this.dataChannel = event.channel;
-          this.setupDataChannelHandlers();
+          console.log('📥 Data channel received:', event.channel.label);
+          this.dataChannels.push(event.channel);
+          this.sendQueues.push([]);
+          this.setupDataChannelHandler(event.channel);
+          if (this.dataChannels.length === this.NUM_DATA_CHANNELS) {
+            console.log('✅ All data channels received');
+            this.emit('datachannel:open');
+          }
         };
       }
 
@@ -261,27 +270,65 @@ export class PeerConnection extends EventEmitter {
    * Envoyer des données
    */
   send(data: string | ArrayBuffer | Blob): void {
-    if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
-      // Queue the message for later send when the data channel opens.
-      console.warn('Data channel not open, queueing message');
-      if (this.sendQueue.length >= this.MAX_SEND_QUEUE) {
+    if (this.dataChannels.length === 0 || !this.dataChannels.some(ch => ch.readyState === 'open')) {
+      // Queue the message for later send when a data channel opens.
+      console.warn('No data channels open, queueing message');
+      // Use the first queue for general messages
+      if (this.sendQueues[0].length >= this.MAX_SEND_QUEUE) {
         console.warn('Send queue full, dropping oldest message');
-        this.sendQueue.shift();
+        this.sendQueues[0].shift();
       }
-      this.sendQueue.push(data);
+      this.sendQueues[0].push(data);
+      return;
+    }
+
+    // Use round-robin for general sends
+    const channel = this.dataChannels[this.channelIndex % this.dataChannels.length];
+    this.channelIndex++;
+
+    if (channel.readyState !== 'open') {
+      // Queue on the channel's queue
+      const queueIndex = this.dataChannels.indexOf(channel);
+      if (queueIndex >= 0) {
+        const queue = this.sendQueues[queueIndex];
+        if (queue.length >= this.MAX_SEND_QUEUE) {
+          console.warn('Send queue full, dropping oldest message');
+          queue.shift();
+        }
+        queue.push(data);
+      }
+      return;
+    }
+
+    // Check if channel buffer is too full before sending
+    if (channel.bufferedAmount > this.MAX_BUFFER_SIZE) {
+      // Queue the message if buffer is too full
+      const queueIndex = this.dataChannels.indexOf(channel);
+      if (queueIndex >= 0) {
+        const queue = this.sendQueues[queueIndex];
+        if (queue.length >= this.MAX_SEND_QUEUE) {
+          console.warn('Send queue full, dropping oldest message');
+          queue.shift();
+        }
+        queue.push(data);
+      }
       return;
     }
 
     try {
-      this.dataChannel.send(data as any);
+      channel.send(data as any);
     } catch (error) {
       console.error('Failed to send data:', error);
-      // If send fails, keep the message for a retry and surface error
-      if (this.sendQueue.length >= this.MAX_SEND_QUEUE) {
-        console.warn('Send queue full, dropping oldest message');
-        this.sendQueue.shift();
+      // Queue on the channel's queue
+      const queueIndex = this.dataChannels.indexOf(channel);
+      if (queueIndex >= 0) {
+        const queue = this.sendQueues[queueIndex];
+        if (queue.length >= this.MAX_SEND_QUEUE) {
+          console.warn('Send queue full, dropping oldest message');
+          queue.shift();
+        }
+        queue.push(data);
       }
-      this.sendQueue.push(data);
       this.emit('error', error);
     }
   }
@@ -295,6 +342,55 @@ export class PeerConnection extends EventEmitter {
       this.send(payload);
     } catch (error) {
       console.error('Failed to serialize/send message:', error);
+      this.emit('error', error);
+    }
+  }
+
+  /**
+   * Envoyer un chunk avec métadonnées et données binaires
+   */
+  sendChunk(metadata: any, data: ArrayBuffer): void {
+    if (this.dataChannels.length === 0) {
+      console.error('No data channels available');
+      return;
+    }
+
+    // Choose a channel for this chunk using round-robin distribution
+    const channelIndex = this.channelIndex % this.dataChannels.length;
+    this.channelIndex++;
+    const channel = this.dataChannels[channelIndex];
+
+    try {
+      // Create binary packet with header: [ChunkID: 4 bytes][TotalChunks: 4 bytes][Size: 4 bytes][Data: N bytes]
+      const headerSize = 12; // 4 + 4 + 4 bytes
+      const packetSize = headerSize + data.byteLength;
+      const packet = new ArrayBuffer(packetSize);
+      const view = new DataView(packet);
+
+      // Write header
+      view.setUint32(0, metadata.index, true); // ChunkID (little-endian)
+      view.setUint32(4, metadata.totalChunks, true); // TotalChunks
+      view.setUint32(8, data.byteLength, true); // Size of data
+
+      // Copy data after header
+      new Uint8Array(packet, headerSize).set(new Uint8Array(data));
+
+      // Send metadata separately (for now, until receiver is updated)
+      const metadataMessage = JSON.stringify({ type: 'chunk_metadata', data: metadata });
+
+      if (channel.readyState === 'open') {
+        channel.send(metadataMessage);
+        channel.send(packet);
+      } else {
+        // Queue on the channel's queue
+        const queue = this.sendQueues[channelIndex];
+        queue.push(metadataMessage);
+        queue.push(packet);
+      }
+
+      console.log(`📤 Sent chunk ${metadata.index}/${metadata.totalChunks} on channel ${channelIndex} (${packetSize} bytes)`);
+    } catch (error) {
+      console.error('Failed to send chunk:', error);
       this.emit('error', error);
     }
   }
@@ -384,10 +480,10 @@ export class PeerConnection extends EventEmitter {
   }
 
   /**
-   * Obtenir la quantité d'octets actuellement bufferisée sur le data channel
+   * Obtenir la quantité d'octets actuellement bufferisée sur les data channels
    */
   getBufferedAmount(): number {
-    return this.dataChannel ? (this.dataChannel.bufferedAmount || 0) : 0;
+    return this.dataChannels.reduce((sum, ch) => sum + (ch.bufferedAmount || 0), 0);
   }
 
   /**
@@ -395,6 +491,13 @@ export class PeerConnection extends EventEmitter {
    */
   isConnected(): boolean {
     return this.connectionState === 'connected';
+  }
+
+  /**
+   * Vérifier si les canaux de données sont prêts
+   */
+  areDataChannelsReady(): boolean {
+    return this.dataChannels.length > 0 && this.dataChannels.every(ch => ch.readyState === 'open');
   }
 
   /**
@@ -406,9 +509,9 @@ export class PeerConnection extends EventEmitter {
     this.stopHeartbeat();
     this.clearConnectionTimeout();
 
-    if (this.dataChannel) {
-      this.dataChannel.close();
-      this.dataChannel = null;
+    if (this.dataChannels.length > 0) {
+      this.dataChannels.forEach(ch => ch.close());
+      this.dataChannels = [];
     }
 
     if (this.peerConnection) {
@@ -426,22 +529,25 @@ export class PeerConnection extends EventEmitter {
   private createDataChannel(): void {
     if (!this.peerConnection) return;
 
-    console.log('📡 Creating data channel...');
+    console.log(`📡 Creating ${this.NUM_DATA_CHANNELS} data channels...`);
 
-    this.dataChannel = this.peerConnection.createDataChannel(
-      'fileTransfer',
-      DATA_CHANNEL_CONFIG
-    );
+    for (let i = 0; i < this.NUM_DATA_CHANNELS; i++) {
+      const channel = this.peerConnection.createDataChannel(
+        `fileTransfer${i}`,
+        DATA_CHANNEL_CONFIG
+      );
 
-    // Set a bufferedAmountLowThreshold so the onbufferedamountlow event fires
-    try {
-      // choose a threshold (1MB) lower than typical buffer limit used by sender
-      (this.dataChannel as any).bufferedAmountLowThreshold = 1 * 1024 * 1024;
-    } catch (err) {
-      // ignore if not supported in the environment
+      // Set a higher bufferedAmountLowThreshold for better throughput
+      try {
+        (channel as any).bufferedAmountLowThreshold = 4 * 1024 * 1024; // 4MB
+      } catch (err) {
+        // ignore
+      }
+
+      this.dataChannels.push(channel);
+      this.sendQueues.push([]);
+      this.setupDataChannelHandler(channel);
     }
-
-    this.setupDataChannelHandlers();
   }
 
   /**
@@ -473,8 +579,8 @@ export class PeerConnection extends EventEmitter {
           break;
         case 'failed':
           this.updateState('failed');
-          // Try reconnecting automatically before emitting final error
-          this.attemptReconnect(new Error('Connection failed'));
+          // Don't auto-reconnect to prevent connection flapping
+          // this.attemptReconnect(new Error('Connection failed'));
           break;
         case 'closed':
           this.updateState('closed');
@@ -499,41 +605,48 @@ export class PeerConnection extends EventEmitter {
   /**
    * Configurer les handlers du Data Channel
    */
-  private setupDataChannelHandlers(): void {
-    if (!this.dataChannel) return;
-
-    this.dataChannel.onopen = () => {
-      console.log('✅ Data channel opened');
-      this.emit('datachannel:open');
-      // Flush any queued messages
-      try {
-        while (this.sendQueue.length > 0 && this.dataChannel && this.dataChannel.readyState === 'open') {
-          const queued = this.sendQueue.shift()!;
-          try {
-            this.dataChannel.send(queued as any);
-          } catch (err) {
-            console.error('Failed to flush queued message:', err);
-            // Put back and stop flushing to avoid busy loop
-            this.sendQueue.unshift(queued);
-            break;
+  private setupDataChannelHandler(channel: RTCDataChannel): void {
+    channel.onopen = () => {
+      console.log(`✅ Data channel ${channel.label} opened`);
+      // Flush queued messages for this channel
+      const queueIndex = this.dataChannels.indexOf(channel);
+      if (queueIndex >= 0) {
+        const queue = this.sendQueues[queueIndex];
+        try {
+          while (queue.length > 0 && channel.readyState === 'open') {
+            const queued = queue.shift()!;
+            try {
+              channel.send(queued as any);
+            } catch (err) {
+              console.error(`Failed to flush queued message on ${channel.label}:`, err);
+              queue.unshift(queued);
+              break;
+            }
           }
+        } catch (err) {
+          console.error(`Error while flushing send queue for ${channel.label}:`, err);
         }
-      } catch (err) {
-        console.error('Error while flushing send queue:', err);
+      }
+      // Emit open only when all channels are open
+      if (this.dataChannels.every(ch => ch.readyState === 'open')) {
+        this.emit('datachannel:open');
       }
     };
 
-    this.dataChannel.onclose = () => {
-      console.log('🔌 Data channel closed');
-      this.emit('datachannel:close');
+    channel.onclose = () => {
+      console.log(`🔌 Data channel ${channel.label} closed`);
+      // Emit close only when all are closed
+      if (this.dataChannels.every(ch => ch.readyState === 'closed')) {
+        this.emit('datachannel:close');
+      }
     };
 
-    this.dataChannel.onerror = (error) => {
-      console.error('Data channel error:', error);
+    channel.onerror = (error) => {
+      console.error(`Data channel ${channel.label} error:`, error);
       this.emit('error', error);
     };
 
-    this.dataChannel.onmessage = (event) => {
+    channel.onmessage = (event) => {
       try {
         this.handleMessage(event.data);
       } catch (err) {
@@ -542,7 +655,26 @@ export class PeerConnection extends EventEmitter {
       }
     };
 
-    this.dataChannel.onbufferedamountlow = () => {
+    channel.onbufferedamountlow = () => {
+      // Flush queued messages when buffer has space
+      const queueIndex = this.dataChannels.indexOf(channel);
+      if (queueIndex >= 0) {
+        const queue = this.sendQueues[queueIndex];
+        try {
+          while (queue.length > 0 && channel.readyState === 'open' && channel.bufferedAmount <= this.MAX_BUFFER_SIZE) {
+            const queued = queue.shift()!;
+            try {
+              channel.send(queued as any);
+            } catch (err) {
+              console.error(`Failed to flush queued message on ${channel.label}:`, err);
+              queue.unshift(queued);
+              break;
+            }
+          }
+        } catch (err) {
+          console.error(`Error while flushing send queue for ${channel.label}:`, err);
+        }
+      }
       this.emit('bufferedamountlow');
     };
   }
@@ -562,6 +694,14 @@ export class PeerConnection extends EventEmitter {
 
           case 'metadata':
             this.emit('metadata', message.data);
+            break;
+
+          case 'metadata_update':
+            this.emit('metadata_update', message.data);
+            break;
+
+          case 'chunk_metadata':
+            this.pendingChunkMetadata = message.data;
             break;
 
           case 'chunk':
@@ -605,7 +745,42 @@ export class PeerConnection extends EventEmitter {
             this.emit('data', message);
         }
       } else {
-        this.emit('binarydata', data);
+        // Handle binary data (chunk data following chunk_metadata)
+        if (this.pendingChunkMetadata) {
+          // Parse header from binary data: [ChunkID: 4 bytes][TotalChunks: 4 bytes][Size: 4 bytes][Data: N bytes]
+          if (data.byteLength < 12) {
+            console.error('Invalid chunk data: too small for header');
+            this.pendingChunkMetadata = null;
+            return;
+          }
+
+          const view = new DataView(data);
+          const chunkId = view.getUint32(0, true);
+          const totalChunks = view.getUint32(4, true);
+          const dataSize = view.getUint32(8, true);
+
+          if (data.byteLength < 12 + dataSize) {
+            console.error('Invalid chunk data: size mismatch');
+            this.pendingChunkMetadata = null;
+            return;
+          }
+
+          // Extract actual data after header
+          const actualData = data.slice(12, 12 + dataSize);
+
+          const chunkData = {
+            ...this.pendingChunkMetadata,
+            index: chunkId,
+            totalChunks,
+            data: actualData,
+          };
+
+          console.log(`📥 Received chunk ${chunkId}/${totalChunks} (${actualData.byteLength} bytes)`);
+          this.emit('chunk', chunkData);
+          this.pendingChunkMetadata = null;
+        } else {
+          this.emit('binarydata', data);
+        }
       }
     } catch (error) {
       console.error('Failed to parse message:', error);
@@ -657,8 +832,11 @@ export class PeerConnection extends EventEmitter {
     this.connectionTimeout = setTimeout(() => {
       if (this.connectionState === 'connecting') {
         console.error('⏱️ Connection timeout');
-        // Attempt reconnect if allowed
-        this.attemptReconnect(new Error('Connection timeout'));
+        this.updateState('failed');
+        // Don't auto-reconnect on timeout to prevent connection flapping
+        // this.attemptReconnect(new Error('Connection timeout'));
+        const err = new Error('Connection timeout');
+        this.emit('error', err);
       }
     }, this.connectionTimeoutMs);
   }
@@ -680,17 +858,19 @@ export class PeerConnection extends EventEmitter {
     this.stopHeartbeat();
     this.clearConnectionTimeout();
 
-    if (this.dataChannel) {
-      try {
-        this.dataChannel.onopen = null;
-        this.dataChannel.onclose = null;
-        this.dataChannel.onerror = null;
-        this.dataChannel.onmessage = null;
-        this.dataChannel.close();
-      } catch (e) {
-        // ignore
-      }
-      this.dataChannel = null;
+    if (this.dataChannels.length > 0) {
+      this.dataChannels.forEach(ch => {
+        try {
+          ch.onopen = null;
+          ch.onclose = null;
+          ch.onerror = null;
+          ch.onmessage = null;
+          ch.close();
+        } catch (e) {
+          // ignore
+        }
+      });
+      this.dataChannels = [];
     }
 
     if (this.peerConnection) {

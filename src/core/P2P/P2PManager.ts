@@ -11,6 +11,7 @@ export class P2PManager {
   private socketClient = getSocketClient();
   private signalingUnsubscribers: Array<() => void> = [];
   private currentUserId: string | null = null;
+  private isConnecting: boolean = false; // Prevent multiple simultaneous connection attempts
 
   constructor(userId: string) {
     this.currentUserId = userId;
@@ -21,20 +22,29 @@ export class P2PManager {
    * Initier une connexion avec un peer
    */
   async connect(peerId: string, peerName: string): Promise<PeerConnection> {
-    console.log(`🚀 Initiating connection to ${peerName}...`);
+    console.log(`🚀 Initiating connection to ${peerName} (${peerId})`);
 
-    // Vérifier si une connexion existe déjà
-    if (this.connections.has(peerId)) {
-      const existing = this.connections.get(peerId)!;
-      if (existing.isConnected()) {
-        console.log('Already connected to this peer');
-        return existing;
-      } else {
-        // Fermer l'ancienne connexion
-        existing.close();
-        this.connections.delete(peerId);
-      }
+    // Prevent multiple simultaneous connection attempts
+    if (this.isConnecting) {
+      console.warn(`⚠️ Connection attempt already in progress, rejecting request to connect to ${peerName}`);
+      throw new Error('A connection attempt is already in progress. Please wait.');
     }
+
+    this.isConnecting = true;
+
+    try {
+      // Vérifier si une connexion existe déjà
+      if (this.connections.has(peerId)) {
+        const existing = this.connections.get(peerId)!;
+        if (existing.isConnected()) {
+          console.log('Already connected to this peer');
+          return existing;
+        } else {
+          // Fermer l'ancienne connexion
+          existing.close();
+          this.connections.delete(peerId);
+        }
+      }
 
     // Créer une nouvelle connexion (initiateur)
     const connection = new PeerConnection({
@@ -75,6 +85,10 @@ export class P2PManager {
       console.error('Failed to connect:', error);
       this.connections.delete(peerId);
       throw error;
+    }
+    } finally {
+      // Reset connection flag when connection attempt completes
+      this.isConnecting = false;
     }
   }
 
@@ -183,6 +197,21 @@ export class P2PManager {
     // Recevoir une offre
     const offOffer = this.socketClient.on('offer', async (data: any) => {
       console.log(`📥 Received offer from ${data.fromUserName}`);
+
+      // Check if we already have a connection with this peer
+      if (this.connections.has(data.fromUserId)) {
+        const existing = this.connections.get(data.fromUserId)!;
+        if (existing.isConnected()) {
+          console.log(`Already connected to ${data.fromUserName}, ignoring offer`);
+          return;
+        }
+      }
+
+      // Check if we're currently trying to connect to someone else
+      if (this.isConnecting) {
+        console.log(`Connection attempt in progress, rejecting offer from ${data.fromUserName}`);
+        return;
+      }
 
       // Demander confirmation à l'utilisateur
       const accept = window.confirm(

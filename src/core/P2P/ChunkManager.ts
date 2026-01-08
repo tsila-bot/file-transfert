@@ -33,7 +33,7 @@ export class ChunkManager {
   private isDestroyed = false;
 
   constructor(options: ChunkManagerOptions = {}) {
-    this.chunkSize = options.chunkSize ?? 128 * 1024;
+    this.chunkSize = options.chunkSize ?? 64 * 1024; // 64KB
     this.bitmap = [];
     this.chunks = new Map();
 
@@ -42,7 +42,9 @@ export class ChunkManager {
     this.autoStorageThreshold = options.autoStorageThreshold ?? 500 * 1024 * 1024;
 
     this.storage = new ChunkStorageOPFS();
-    this.decompressedCache = new LRUCache<number, Uint8Array>(options.cacheSize ?? 50);
+    // Reduce cache size for memory efficiency
+    const cacheSize = options.cacheSize ?? Math.max(10, Math.min(50, Math.floor(100 * 1024 * 1024 / (options.chunkSize ?? 64 * 1024)))); // Max 10-50 based on chunk size
+    this.decompressedCache = new LRUCache<number, Uint8Array>(cacheSize);
 
     try {
       this.workerPool = new WorkerPool(options.workerPoolSize);
@@ -56,14 +58,14 @@ export class ChunkManager {
     file: File,
     options?: { encrypt?: boolean; password?: string; encryptionKey?: CryptoKey }
   ): Promise<{
-    chunks: Chunk[];
     metadata: ChunkMetadata;
+    chunkGenerator: AsyncGenerator<Chunk, void, unknown>;
   }> {
     if (this.isDestroyed) {
       throw new Error('chunkManager has been destroyed');
     }
 
-    console.log(`📦 Splitting file: ${file.name} (${file.size} bytes)`);
+    console.log(`📦 Starting streaming split for file: ${file.name} (${file.size} bytes)`);
 
     const totalChunks = Math.ceil(file.size / this.chunkSize);
     const fileId = this.generateFileId();
@@ -101,39 +103,14 @@ export class ChunkManager {
       }
     }
 
-    const chunks: Chunk[] = [];
+    // Calculate file hash from chunk hashes as we go
     const chunkHashes: string[] = [];
-
-    const BATCH_SIZE = this.workerPool ? this.workerPool.size * 2 : 10;
-
-    for (let batchStart = 0; batchStart < totalChunks; batchStart += BATCH_SIZE) {
-      const batchEnd = Math.min(batchStart + BATCH_SIZE, totalChunks);
-
-      const batchPromises: Promise<{ chunk: Chunk }>[] = [];
-      for (let i = batchStart; i < batchEnd; i++) {
-        batchPromises.push(this.processChunkOptimized(file, i, encryptionKey));
-      }
-
-      const batchResults = await Promise.all(batchPromises);
-
-      for (const result of batchResults) {
-        chunks.push(result.chunk);
-        chunkHashes.push(result.chunk.hash);
-      }
-
-      const progress = Math.round((batchEnd / totalChunks) * 100);
-      if (batchEnd % 500 === 0 || batchEnd === totalChunks) {
-        console.log(`Split progress: ${batchEnd}/${totalChunks} (${progress}%)`);
-      }
-    }
-
-    const fileHash = await this.hashData(new TextEncoder().encode(chunkHashes.join('')));
 
     const metadata: ChunkMetadata = {
       fileId,
       fileName: file.name,
       fileSize: file.size,
-      fileHash,
+      fileHash: '', // Will be set after all chunks
       totalChunks,
       chunkSize: this.chunkSize,
       mimeType: file.type || 'application/octet-stream',
@@ -144,9 +121,42 @@ export class ChunkManager {
       timestamp: Date.now(),
     };
 
-    console.log(`✅ File split complete: ${totalChunks} chunks (${Math.round(file.size / 1024 / 1024)}MB)`);
+    // Create async generator for chunks
+    const chunkGenerator = async function* (this: ChunkManager) {
+      const BATCH_SIZE = this.workerPool ? this.workerPool.size * 2 : 10;
 
-    return { chunks, metadata };
+      for (let batchStart = 0; batchStart < totalChunks; batchStart += BATCH_SIZE) {
+        const batchEnd = Math.min(batchStart + BATCH_SIZE, totalChunks);
+
+        const batchPromises: Promise<{ chunk: Chunk }>[] = [];
+        for (let i = batchStart; i < batchEnd; i++) {
+          batchPromises.push(this.processChunkOptimized(file, i, encryptionKey));
+        }
+
+        const batchResults = await Promise.all(batchPromises);
+
+        for (const result of batchResults) {
+          chunkHashes.push(result.chunk.hash);
+          yield result.chunk;
+        }
+
+        const progress = Math.round((batchEnd / totalChunks) * 100);
+        if (batchEnd % 500 === 0 || batchEnd === totalChunks) {
+          console.log(`Split progress: ${batchEnd}/${totalChunks} (${progress}%)`);
+        }
+      }
+
+      // Calculate final file hash
+      const fileHash = await this.hashData(new TextEncoder().encode(chunkHashes.join('')));
+      metadata.fileHash = fileHash;
+
+      console.log(`✅ File split complete: ${totalChunks} chunks (${Math.round(file.size / 1024 / 1024)}MB)`);
+
+      // Yield a special "complete" signal with the final metadata
+      yield { index: -1, data: new ArrayBuffer(0), hash: '', size: 0, compressed: false, encrypted: false, metadata: metadata } as any;
+    }.bind(this);
+
+    return { metadata, chunkGenerator: chunkGenerator() };
   }
 
   private async processChunkOptimized(
@@ -219,6 +229,11 @@ export class ChunkManager {
 
     const calculatedHash = await this.hashData(new Uint8Array(chunkData));
     if (calculatedHash !== chunk.hash) {
+      console.error(`❌ Chunk ${chunk.index} hash mismatch! Expected: ${chunk.hash}, Got: ${calculatedHash}`);
+      console.error(`Chunk data size: ${chunkData.byteLength} bytes`);
+      // Log first 32 bytes of received data for debugging
+      const dataView = new Uint8Array(chunkData.slice(0, 32));
+      console.error(`First 32 bytes: ${Array.from(dataView).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
       throw new Error(`Chunk ${chunk.index} hash mismatch`);
     }
 
@@ -411,7 +426,7 @@ export class ChunkManager {
     let binary = '';
     for (let i = 0; i < bytes.length; i += chunkSize) {
       const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
-      binary += String.fromCharCode(...chunk);
+      binary += String.fromCharCode.apply(null, Array.from(chunk));
     }
     return btoa(binary);
   }

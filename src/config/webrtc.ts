@@ -25,8 +25,8 @@ export const RTC_CONFIGURATION: RTCConfiguration = {
 
 // Configuration du Data Channel
 export const DATA_CHANNEL_CONFIG: RTCDataChannelInit = {
-  ordered: true, // Important pour les transferts de fichiers
-  maxRetransmits: 3,
+  ordered: true, // Assurer l'ordre des messages pour l'intégrité des données
+  maxRetransmits: 5, // Plus de retransmissions pour la fiabilité
 };
 
 // Constantes
