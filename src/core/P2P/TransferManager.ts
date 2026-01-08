@@ -32,7 +32,7 @@ export class TransferManager extends EventEmitter {
   /**
    * Ajouter un peer et créer son TransferEngine
    */
-  addPeer(connection: PeerConnection): void {
+  async addPeer(connection: PeerConnection): Promise<void> {
     const peerId = connection['peerId'];
     const peerName = connection['peerName'];
 
@@ -55,6 +55,13 @@ export class TransferManager extends EventEmitter {
         this.removePeer(peerId);
       }
     });
+
+    // Reprendre automatiquement les transferts incomplets pour ce peer
+    try {
+      await engine.resumeIncompleteTransfers();
+    } catch (error) {
+      console.error(`❌ Error resuming transfers for peer ${peerId}:`, error);
+    }
 
     this.emit('peer:added', { peerId, peerName });
   }
