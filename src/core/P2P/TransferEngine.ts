@@ -145,7 +145,7 @@ export class TransferEngine {
   private setupConnectionMonitoring(): void {
     this.connection.on('statechange', (state: ConnectionState) => {
       if (state === 'connected') {
-        // Resume is now handled in TransferManager.addPeer
+        this.handleConnectionRestored();
       } else if (state === 'disconnected' || state === 'failed') {
         this.handleConnectionLoss();
       }
@@ -274,45 +274,24 @@ export class TransferEngine {
   /**
    * Gérer la restauration de la connexion
    */
-  /**
-   * Reprendre automatiquement les transferts incomplets pour ce peer
-   */
-  public async resumeIncompleteTransfers(): Promise<void> {
-    console.log('🔄 Checking for incomplete transfers to resume...');
+  private async handleConnectionRestored(): Promise<void> {
+    console.log('🔄 Connection restored, checking for incomplete transfers...');
 
     const peerId = this.connection['peerId'];
     const incompleteTransfers = await this.getIncompleteTransfersForPeer(peerId);
 
     if (incompleteTransfers.length > 0) {
-      console.log(`📋 Found ${incompleteTransfers.length} incomplete transfers for ${peerId}, auto-resuming...`);
+      console.log(`📋 Found ${incompleteTransfers.length} incomplete transfers for ${peerId}`);
 
-      // Reprendre automatiquement tous les transferts incomplets
-      for (const transferInfo of incompleteTransfers) {
-        try {
-          console.log(`🔄 Auto-resuming transfer: ${transferInfo.id} (${transferInfo.fileName})`);
-          const success = await this.resumeTransfer(transferInfo.id);
-          if (success) {
-            console.log(`✅ Successfully auto-resumed transfer: ${transferInfo.id}`);
-
-            // Notifier l'utilisateur de la reprise automatique
-            window.dispatchEvent(
-              new CustomEvent('transfer:auto-resumed', {
-                detail: {
-                  fileId: transferInfo.id,
-                  fileName: transferInfo.fileName,
-                  peerName: this.connection['peerName'],
-                },
-              })
-            );
-          } else {
-            console.warn(`⚠️ Failed to auto-resume transfer: ${transferInfo.id}`);
-          }
-        } catch (error) {
-          console.error(`❌ Error auto-resuming transfer ${transferInfo.id}:`, error);
-        }
-      }
-    } else {
-      console.log(`ℹ️ No incomplete transfers found for ${peerId}`);
+      window.dispatchEvent(
+        new CustomEvent('transfers:resume:available', {
+          detail: {
+            peerId,
+            peerName: this.connection['peerName'],
+            transfers: incompleteTransfers,
+          },
+        })
+      );
     }
   }
 

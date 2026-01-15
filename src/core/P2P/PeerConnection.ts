@@ -20,7 +20,6 @@ import {
 export class PeerConnection extends EventEmitter {
   private peerConnection: RTCPeerConnection | null = null;
   private dataChannels: RTCDataChannel[] = [];
-  private erroredChannels: Set<RTCDataChannel> = new Set();
   private pendingIceCandidates: RTCIceCandidateInit[] = [];
   private sendQueues: Array<Array<string | ArrayBuffer | Blob>> = [];
   private pendingChunkMetadata: any = null;
@@ -271,9 +270,7 @@ export class PeerConnection extends EventEmitter {
    * Envoyer des données
    */
   send(data: string | ArrayBuffer | Blob): void {
-    const availableChannels = this.dataChannels.filter(ch => ch.readyState === 'open' && !this.erroredChannels.has(ch));
-    
-    if (availableChannels.length === 0) {
+    if (this.dataChannels.length === 0 || !this.dataChannels.some(ch => ch.readyState === 'open')) {
       // Queue the message for later send when a data channel opens.
       console.warn('No data channels open, queueing message');
       // Use the first queue for general messages
@@ -286,7 +283,7 @@ export class PeerConnection extends EventEmitter {
     }
 
     // Use round-robin for general sends
-    const channel = availableChannels[this.channelIndex % availableChannels.length];
+    const channel = this.dataChannels[this.channelIndex % this.dataChannels.length];
     this.channelIndex++;
 
     if (channel.readyState !== 'open') {
@@ -500,7 +497,7 @@ export class PeerConnection extends EventEmitter {
    * Vérifier si les canaux de données sont prêts
    */
   areDataChannelsReady(): boolean {
-    return this.dataChannels.length > 0 && this.dataChannels.every(ch => ch.readyState === 'open' && !this.erroredChannels.has(ch));
+    return this.dataChannels.length > 0 && this.dataChannels.every(ch => ch.readyState === 'open');
   }
 
   /**
@@ -616,7 +613,7 @@ export class PeerConnection extends EventEmitter {
       if (queueIndex >= 0) {
         const queue = this.sendQueues[queueIndex];
         try {
-          while (queue.length > 0 && channel.readyState === 'open' && !this.erroredChannels.has(channel)) {
+          while (queue.length > 0 && channel.readyState === 'open') {
             const queued = queue.shift()!;
             try {
               channel.send(queued as any);
@@ -638,7 +635,6 @@ export class PeerConnection extends EventEmitter {
 
     channel.onclose = () => {
       console.log(`🔌 Data channel ${channel.label} closed`);
-      this.erroredChannels.delete(channel);
       // Emit close only when all are closed
       if (this.dataChannels.every(ch => ch.readyState === 'closed')) {
         this.emit('datachannel:close');
@@ -647,7 +643,6 @@ export class PeerConnection extends EventEmitter {
 
     channel.onerror = (error) => {
       console.error(`Data channel ${channel.label} error:`, error);
-      this.erroredChannels.add(channel);
       this.emit('error', error);
     };
 
