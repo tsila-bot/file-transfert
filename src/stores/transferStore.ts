@@ -2,6 +2,7 @@
 
 import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
+import { getTransferManager } from '@/core/P2P/TransferManager';
 import { Transfer, TransferStatus } from '@/types/transfer.types';
 import { useEffect } from 'react'; // ✅ AJOUT DE L'IMPORT
 
@@ -52,6 +53,7 @@ const eventListeners: {
   transferOffer?: (event: Event) => void;
   transferComplete?: (event: Event) => void;
   transferResumed?: (event: Event) => void;
+  transferAutoResumed?: (event: Event) => void;
 } = {};
 
 export const useTransferStore = create<TransferState>()(
@@ -109,11 +111,27 @@ export const useTransferStore = create<TransferState>()(
           get().updateTransfer(data.transfer);
         };
 
+        // ✅ Écouter les transferts repris automatiquement
+        eventListeners.transferAutoResumed = (event: Event) => {
+          const data = (event as CustomEvent).detail;
+          console.log(`[TransferStore] 🔄 Transfer auto-resumed: ${data.fileId} (${data.fileName}) with ${data.peerName}`);
+
+          // Afficher une notification toast
+          const { toast } = require('sonner');
+          if (toast) {
+            toast.success(`Transfert repris automatiquement: ${data.fileName}`, {
+              description: `Reprise avec ${data.peerName}`,
+              duration: 4000,
+            });
+          }
+        };
+
         // Attacher les listeners
         window.addEventListener('transfer:update', eventListeners.transferUpdate);
         window.addEventListener('transfer:offer', eventListeners.transferOffer);
         window.addEventListener('transfer:complete', eventListeners.transferComplete);
         window.addEventListener('transfer:resumed', eventListeners.transferResumed);
+        window.addEventListener('transfer:auto-resumed', eventListeners.transferAutoResumed);
 
         set({ listenersInitialized: true });
         console.log('[TransferStore] ✅ Listeners initialized');
@@ -136,6 +154,9 @@ export const useTransferStore = create<TransferState>()(
         }
         if (eventListeners.transferResumed) {
           window.removeEventListener('transfer:resumed', eventListeners.transferResumed);
+        }
+        if (eventListeners.transferAutoResumed) {
+          window.removeEventListener('transfer:auto-resumed', eventListeners.transferAutoResumed);
         }
 
         set({ listenersInitialized: false });
