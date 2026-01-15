@@ -63,10 +63,10 @@ export default function TransferZone() {
 			return
 		}
 
-		// Check if peer's connection is established and data channels are ready
+		// Check if peer's data channels are ready
 		const connection = manager.getPeerConnection(targetPeer)
-		if (!connection || !connection.isConnected() || !connection.areDataChannelsReady()) {
-			alert('Connexion en cours d\'établissement. Veuillez patienter que la connexion soit pleinement établie.')
+		if (!connection || !connection.areDataChannelsReady()) {
+			alert('Connexion en cours d\'établissement. Veuillez patienter que les canaux de données soient prêts.')
 			return
 		}
 
@@ -98,10 +98,10 @@ export default function TransferZone() {
 			return
 		}
 
-		// Check if peer's connection is established and data channels are ready
+		// Check if peer's data channels are ready
 		const connection = manager.getPeerConnection(targetPeer)
-		if (!connection || !connection.isConnected() || !connection.areDataChannelsReady()) {
-			alert('Connexion en cours d\'établissement. Veuillez patienter que la connexion soit pleinement établie.')
+		if (!connection || !connection.areDataChannelsReady()) {
+			alert('Connexion en cours d\'établissement. Veuillez patienter que les canaux de données soient prêts.')
 			return
 		}
 
