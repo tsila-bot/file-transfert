@@ -1,26 +1,32 @@
 'use client';
 
-import { useState, useRef, ChangeEvent, DragEvent, ReactNode } from 'react';
+import { useState, useRef, ChangeEvent, DragEvent } from 'react';
 import { Upload, File, X, Check, AlertCircle, Cloud, Loader } from 'lucide-react';
 import { PeerManager } from '@/components/peers/PeerManager';
 import { PeerList } from '@/components/peers/PeerList';
+import { BiTransfer } from 'react-icons/bi';
+import { FaCog, FaEnvelope, FaUser, FaClock, FaPalette, FaSignOutAlt } from 'react-icons/fa';
+import { MdNotifications, MdDarkMode } from 'react-icons/md';
 
-interface TransfertsPageProps {
-  children?: ReactNode;
-}
-
-export default function TransfertsPage({ children }: TransfertsPageProps) {
+export default function TransfertPageOld({ children }: { children: React.ReactNode }) {
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [selectedPeer, setSelectedPeer] = useState<string | null>(null);
+  const [messageCount, setMessageCount] = useState<number>(3);
+  const [notificationCount, setNotificationCount] = useState<number>(5);
+  const [isProfileOpen, setIsProfileOpen] = useState<boolean>(false);
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const profileRef = useRef<HTMLDivElement>(null);
 
   return (
-    <div className="p-6">
+    <div className="p-6 pt-24">
+      {' '}
+      {/* Augmenté le padding-top pour le header fixe */}
       {/* Gestionnaire de peers (invisible) */}
       <PeerManager />
       <div className="flex flex-col lg:flex-row items-start justify-start gap-3 w-full mx-auto">
         {/* Liste des pairs en ligne - Gauche (sidebar fixe) */}
-        <div className="lg:col-span-1 w-full lg:w-1/5 lg:sticky lg:h-[calc(100vh-8rem)]">
+        <div className="lg:col-span-1 w-full lg:w-1/5 lg:sticky lg:top-24 lg:h-[calc(100vh-8rem)]">
           <div className="bg-white rounded-lg shadow p-4 h-full flex flex-col">
             <h2 className="text-xl font-semibold mb-4 text-black">Utilisateurs en ligne</h2>
             <div className="flex-1 overflow-y-auto">
@@ -35,11 +41,10 @@ export default function TransfertsPage({ children }: TransfertsPageProps) {
           </div>
         </div>
 
-        {/* Contenu central */}
-        <div className="lg:col-span-1 w-full lg:w-3/5">{children}</div>
+        {children}
 
         {/* Panneau de droite - Informations (sidebar fixe) */}
-        <div className="lg:col-span-1 w-full lg:w-1/5 lg:sticky lg:h-[calc(100vh-8rem)]">
+        <div className="lg:col-span-1 w-full lg:w-1/5 lg:sticky lg:top-24 lg:h-[calc(100vh-8rem)]">
           <div className="bg-white rounded-lg shadow p-4 h-full flex flex-col">
             <h2 className="text-xl font-semibold mb-4 text-black">Informations</h2>
             <div className="space-y-4 flex-1 overflow-y-auto">
