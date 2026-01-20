@@ -635,15 +635,26 @@ export class PeerConnection extends EventEmitter {
 
     channel.onclose = () => {
       console.log(`🔌 Data channel ${channel.label} closed`);
-      // Emit close only when all are closed
-      if (this.dataChannels.every(ch => ch.readyState === 'closed')) {
+      // Remove closed channel from the list to avoid processing it further
+      const index = this.dataChannels.indexOf(channel);
+      if (index >= 0) {
+        this.dataChannels.splice(index, 1);
+        this.sendQueues.splice(index, 1);
+      }
+      // Emit close only when all are closed or closing
+      if (this.dataChannels.length === 0 || this.dataChannels.every(ch => ch.readyState === 'closed' || ch.readyState === 'closing')) {
         this.emit('datachannel:close');
       }
     };
 
-    channel.onerror = (error) => {
-      console.error(`Data channel ${channel.label} error:`, error);
-      this.emit('error', error);
+    channel.onerror = (error: any) => {
+      // Extract error details for better debugging
+      const errorMsg = error?.error?.message || error?.message || String(error);
+      console.error(`Data channel ${channel.label} error:`, errorMsg);
+      // Only emit if it's a critical error, not a normal closure
+      if (!errorMsg.includes('Close called') && !errorMsg.includes('User-Initiated')) {
+        this.emit('error', error);
+      }
     };
 
     channel.onmessage = (event) => {

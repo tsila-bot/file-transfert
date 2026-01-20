@@ -52,11 +52,11 @@ export function useSocket() {
     // Connect only after auth initialization; connect may be a no-op if not authenticated
     connect();
 
-    // Nettoyage à la fin
+    // Nettoyage à la fin: ne PAS déconnecter complètement, juste nettoyer les event handlers
     return () => {
-      console.log('🧹 Cleaning up socket listeners');
+      console.log('🧹 Cleaning up socket event listeners (keeping socket connected)');
 
-      // Exécuter toutes les fonctions de cleanup
+      // Exécuter toutes les fonctions de cleanup (supprimer JUSTE les event handlers)
       cleanupRef.current.forEach(cleanup => {
         try {
           cleanup();
@@ -66,10 +66,9 @@ export function useSocket() {
       });
       cleanupRef.current = [];
 
-      // Se déconnecter si besoin
-      if (socketClient.current.isConnected()) {
-        disconnect();
-      }
+      // ❌ NE PAS déconnecter le socket lors du changement de page
+      // Le socket doit rester connecté pour que d'autres composants puissent l'utiliser
+      // disconnect(); // REMOVED - causes reconnection issues
     };
   }, [connect, disconnect]);
 

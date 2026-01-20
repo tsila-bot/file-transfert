@@ -29,9 +29,11 @@ export function useP2P() {
       window.addEventListener('p2p:error', handleError as EventListener);
 
       return () => {
+        // ❌ NE PAS détruire le P2PManager lors du changement de page
+        // Les connexions P2P doivent rester actives pour fonctionner correctement
         window.removeEventListener('p2p:connected', handleConnected as EventListener);
         window.removeEventListener('p2p:error', handleError as EventListener);
-        destroyP2PManager();
+        // destroyP2PManager(); // REMOVED - keeps connections alive during navigation
       };
     }
   }, [user]);

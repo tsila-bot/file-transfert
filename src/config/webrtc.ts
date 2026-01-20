@@ -11,6 +11,15 @@ export interface ICEServer {
 export const ICE_SERVERS: ICEServer[] = [
   // Serveurs STUN publics de Google
   ...ENV.STUN_SERVERS,
+  // Serveurs STUN alternatifs (fallback si les premiers échouent)
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  { urls: 'stun:stun.l.google.com:19301' },
+  { urls: 'stun:stun.services.mozilla.com:3478' },
+  { urls: 'stun:stun1.services.mozilla.com:3478' },
   // Serveur TURN (pour NAT traversal) si configuré
   ...(ENV.TURN_SERVER ? [ENV.TURN_SERVER] : []),
 ];

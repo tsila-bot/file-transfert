@@ -1,6 +1,7 @@
 // lib/api/client.ts
 
 import axios from 'axios';
+import { useAuthStore } from '@/stores/authStore';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000';
 
@@ -15,7 +16,8 @@ export const apiClient = axios.create({
 // Intercepteur pour ajouter le token à chaque requête
 apiClient.interceptors.request.use(
   (config) => {
-    const token = localStorage.getItem('accessToken');
+    // Récupérer le token depuis le Zustand store (pas localStorage)
+    const token = useAuthStore.getState().accessToken;
     if (token) {
       config.headers.Authorization = `Bearer ${token}`;
     }
@@ -46,15 +48,20 @@ apiClient.interceptors.response.use(
 
         const { accessToken } = response.data;
 
-        // Sauvegarder le nouveau token
-        localStorage.setItem('accessToken', accessToken);
+        // Mettre à jour le token dans le Zustand store
+        // Le persist middleware va automatiquement sauvegarder en localStorage
+        useAuthStore.setState({ accessToken });
 
         // Réessayer la requête originale
         originalRequest.headers.Authorization = `Bearer ${accessToken}`;
         return apiClient(originalRequest);
       } catch (refreshError) {
         // Échec du refresh, déconnecter l'utilisateur
-        localStorage.removeItem('accessToken');
+        useAuthStore.setState({
+          user: null,
+          accessToken: null,
+          isAuthenticated: false,
+        });
         window.location.href = '/login';
         return Promise.reject(refreshError);
       }

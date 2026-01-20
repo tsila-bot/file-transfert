@@ -40,7 +40,7 @@ export class TransferManager extends EventEmitter {
 
     // Vérifier si le peer existe déjà
     if (this.transferEngines.has(peerId)) {
-      console.warn(`Peer ${peerId} already exists`);
+      console.log(`ℹ️ Peer ${peerId} already exists, skipping duplicate add`);
       return;
     }
 
