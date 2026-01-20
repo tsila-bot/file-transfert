@@ -3,7 +3,6 @@
 import { useState } from 'react';
 import HeaderPage from './shared/header/header';
 import Sidebar from './shared/sidebar/sidebar';
-import TransfertsPage from './transfert/page';
 
 export default function DashboardPage({ children }: { children: React.ReactNode }) {
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
@@ -28,7 +27,9 @@ export default function DashboardPage({ children }: { children: React.ReactNode 
           isSidebarOpen ? 'ml-64' : 'ml-20'
         } mt-24`}
       >
-        <TransfertsPage>{children}</TransfertsPage>
+        <div className={`p-6 ${isDarkMode ? 'bg-gray-900 text-white' : 'bg-gray-50'}`}>
+          {children}
+        </div>
       </main>
     </div>
   );
