@@ -6,14 +6,14 @@ import { Share2, Zap, Shield, Command } from 'lucide-react';
 
 interface AuthLayoutProps {
   children: React.ReactNode;
-  title: string;
-  subtitle: string;
+  title?: string;
+  subtitle?: string;
 }
 
 export default function AuthLayout({
   children,
-  title,
-  subtitle
+  title = "Connexion",
+  subtitle = "Accédez à votre compte"
 }: AuthLayoutProps) {
   return (
     <div className="min-h-screen w-full flex bg-[#1a1d2e] overflow-hidden">

@@ -23,9 +23,9 @@ export default function TransferZone() {
 
 	// Sync selectedPeer with global active selection
 	React.useEffect(() => {
-		const active = peerStore.activePeerId || null
+		const active = peerStore.activePeerIds.length > 0 ? peerStore.activePeerIds[0] : null
 		setSelectedPeer(active)
-	}, [peerStore.activePeerId])
+	}, [peerStore.activePeerIds])
 	const [password, setPassword] = useState('')
 	const [compress, setCompress] = useState(true)
 
@@ -63,6 +63,13 @@ export default function TransferZone() {
 			return
 		}
 
+		// Check if peer's data channels are ready
+		const connection = manager.getPeerConnection(targetPeer)
+		if (!connection || !connection.areDataChannelsReady()) {
+			alert('Connexion en cours d\'établissement. Veuillez patienter que les canaux de données soient prêts.')
+			return
+		}
+
 		try {
 			await manager.sendFile(file, targetPeer, {
 				encrypt: !!password,
@@ -91,6 +98,13 @@ export default function TransferZone() {
 			return
 		}
 
+		// Check if peer's data channels are ready
+		const connection = manager.getPeerConnection(targetPeer)
+		if (!connection || !connection.areDataChannelsReady()) {
+			alert('Connexion en cours d\'établissement. Veuillez patienter que les canaux de données soient prêts.')
+			return
+		}
+
 		try {
 			await manager.sendFile(file, targetPeer, {
 				encrypt: !!password,
@@ -104,7 +118,7 @@ export default function TransferZone() {
 	}, [manager, password, selectedPeer, connectedPeers])
 
 	return (
-		<div className="p-4">
+		<div className="p-4 text-black">
 			<h2 className="text-lg font-semibold mb-2">Transfert de fichiers</h2>
 
 			<div className="mb-3">
@@ -112,7 +126,7 @@ export default function TransferZone() {
 				<select
 					value={selectedPeer ?? ''}
 					onChange={(e) => setSelectedPeer(e.target.value || null)}
-					className="border rounded p-2 w-full"
+					className="border rounded p-2 w-full text-black"
 				>
 					<option value="">-- Sélectionner un pair --</option>
 					{connectedPeers.map((p) => (
@@ -138,7 +152,7 @@ export default function TransferZone() {
 					type="password"
 					value={password}
 					onChange={(e) => setPassword(e.target.value)}
-					className="border rounded p-2"
+					className="border rounded p-2 text-black"
 				/>
 				<label className="flex items-center gap-2 ml-4">
 					<input type="checkbox" checked={compress} onChange={(e) => setCompress(e.target.checked)} />
@@ -151,22 +165,53 @@ export default function TransferZone() {
 				<div className="space-y-3">
 					{transfers.length === 0 && <div>Aucun transfert</div>}
 					{transfers.map((t) => (
-						<div key={t.id} className="border p-3 rounded">
-							<div className="flex justify-between items-center mb-2">
-								<div>
-									<div className="font-semibold">{t.fileName}</div>
-									<div className="text-xs text-gray-500">{t.peerName} • {t.direction}</div>
+						<div key={t.id} className="border p-4 rounded-lg shadow-sm bg-white">
+							<div className="flex justify-between items-start mb-3">
+								<div className="flex-1">
+									<div className="font-semibold text-lg">{t.fileName}</div>
+									<div className="text-sm text-gray-600">
+										{t.peerName} • {t.direction === 'send' ? 'Envoi' : 'Réception'} • {t.status}
+									</div>
+									<div className="text-xs text-gray-500 mt-1">
+										{new Date(t.startedAt).toLocaleTimeString()}
+										{t.completedAt && ` - ${new Date(t.completedAt).toLocaleTimeString()}`}
+									</div>
 								</div>
-								<div className="text-sm">{t.progress.percentage}%</div>
+								<div className="text-right">
+									<div className="text-2xl font-bold text-blue-600">{t.progress.percentage}%</div>
+									<div className="text-xs text-gray-500">
+										{Math.round(t.fileSize / 1024 / 1024)} MB
+									</div>
+								</div>
 							</div>
 
-							<ProgressBar percentage={t.progress.percentage} speed={t.progress.speed} eta={t.progress.eta} />
+							<ProgressBar
+								percentage={t.progress.percentage}
+								speed={t.progress.speed}
+								eta={t.progress.eta}
+								bytesReceived={t.progress.bytesReceived}
+								bytesTotal={t.progress.bytesTotal}
+								status={t.status}
+							/>
+
+							{/* Status-specific messages */}
+							{t.status === 'failed' && t.error && (
+								<div className="mt-2 p-2 bg-red-50 border border-red-200 rounded text-sm text-red-700">
+									❌ {t.error}
+								</div>
+							)}
+
+							{t.status === 'completed' && (
+								<div className="mt-2 p-2 bg-green-50 border border-green-200 rounded text-sm text-green-700">
+									✅ Transfert terminé avec succès
+								</div>
+							)}
 
 							{/* Actions: show accept/reject when this client is the receiver and transfer is pending */}
 							{t.direction === 'receive' && t.status === 'pending' && (
 								<div className="mt-3 flex gap-2">
 									<button
-										className="px-3 py-1 bg-green-600 text-white rounded"
+										className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
 										onClick={() => {
 											try {
 												manager.acceptTransfer(t.id, t.peerId)
@@ -178,7 +223,7 @@ export default function TransferZone() {
 										Accepter
 									</button>
 									<button
-										className="px-3 py-1 bg-red-600 text-white rounded"
+										className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
 										onClick={() => {
 											try {
 												manager.rejectTransfer(t.id, t.peerId, 'Refus manuel')
@@ -191,9 +236,17 @@ export default function TransferZone() {
 									</button>
 								</div>
 							)}
-							<div className="mt-2">
-								<ChunkVisualization received={t.progress.chunksReceived} total={t.progress.chunksTotal} />
-							</div>
+
+							{/* Chunk visualization for active transfers */}
+							{(t.status === 'active' || t.status === 'paused') && (
+								<div className="mt-3">
+									<ChunkVisualization
+										received={t.progress.chunksReceived}
+										total={t.progress.chunksTotal}
+										status={t.status}
+									/>
+								</div>
+							)}
 						</div>
 					))}
 				</div>

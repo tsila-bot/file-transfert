@@ -1,8 +1,19 @@
-// lib/p2p/ChunkManager.ts
+// lib/p2p/ChunkManagerUltra.ts
 
-import { compress, decompress } from 'fflate';
 import { Chunk, ChunkMetadata } from '@/types/transfer.types';
 import { EncryptionManager, EncryptedData, EncryptionMetadata } from '@/core/crypto/encryption';
+import { WorkerPool } from './WorkerPool';
+import { LRUCache } from './LRUCache';
+import { ChunkStorageOPFS } from './ChunkStorageOPFS';
+
+interface ChunkManagerOptions {
+  chunkSize?: number;
+  useStorage?: boolean;
+  workerPoolSize?: number;
+  cacheSize?: number;
+  autoEnableStorage?: boolean;
+  autoStorageThreshold?: number;
+}
 
 export class ChunkManager {
   private chunkSize: number;
@@ -11,101 +22,95 @@ export class ChunkManager {
   private metadata: ChunkMetadata | null = null;
   private chunkEncryptionMetadata: Map<number, EncryptionMetadata> = new Map();
 
-  // Default chunk size lowered to 128 KB to reduce per-message size over SCTP
-  constructor(chunkSize: number = 128 * 1024) {
-    this.chunkSize = chunkSize;
+  private storage: ChunkStorageOPFS;
+  private useStorage: boolean;
+  private autoEnableStorage: boolean;
+  private autoStorageThreshold: number;
+
+  private workerPool: WorkerPool | null = null;
+  private decompressedCache: LRUCache<number, Uint8Array>;
+
+  private isDestroyed = false;
+
+  constructor(options: ChunkManagerOptions = {}) {
+    this.chunkSize = options.chunkSize ?? 64 * 1024; // 64KB
     this.bitmap = [];
     this.chunks = new Map();
+
+    this.useStorage = options.useStorage ?? false;
+    this.autoEnableStorage = options.autoEnableStorage ?? true;
+    this.autoStorageThreshold = options.autoStorageThreshold ?? 500 * 1024 * 1024;
+
+    this.storage = new ChunkStorageOPFS();
+    // Reduce cache size for memory efficiency
+    const cacheSize = options.cacheSize ?? Math.max(10, Math.min(50, Math.floor(100 * 1024 * 1024 / (options.chunkSize ?? 64 * 1024)))); // Max 10-50 based on chunk size
+    this.decompressedCache = new LRUCache<number, Uint8Array>(cacheSize);
+
+    try {
+      this.workerPool = new WorkerPool(options.workerPoolSize);
+    } catch (error) {
+      console.warn('⚠️ Failed to initialize WorkerPool, falling back to main thread:', error);
+      this.workerPool = null;
+    }
   }
 
-  /**
-   * Découper un fichier en chunks (avec chiffrement optionnel)
-   */
   async splitFile(
     file: File,
     options?: { encrypt?: boolean; password?: string; encryptionKey?: CryptoKey }
   ): Promise<{
-    chunks: Chunk[];
     metadata: ChunkMetadata;
+    chunkGenerator: AsyncGenerator<Chunk, void, unknown>;
   }> {
-    console.log(`📦 Splitting file: ${file.name} (${file.size} bytes)`);
+    if (this.isDestroyed) {
+      throw new Error('chunkManager has been destroyed');
+    }
+
+    console.log(`📦 Starting streaming split for file: ${file.name} (${file.size} bytes)`);
 
     const totalChunks = Math.ceil(file.size / this.chunkSize);
-    const chunks: Chunk[] = [];
     const fileId = this.generateFileId();
 
-    // Calculer le hash du fichier complet
-    const fileBuffer = await file.arrayBuffer();
-    const fileHash = await this.hashData(new Uint8Array(fileBuffer));
+    if (this.autoEnableStorage && file.size > this.autoStorageThreshold && !this.useStorage) {
+      console.log('⚠️ Large file detected, enabling OPFS storage');
+      this.useStorage = true;
+      if (this.storage.isSupported()) {
+        try {
+          await this.storage.init();
+        } catch (error) {
+          console.warn('⚠️ OPFS init failed, using memory:', error);
+          this.useStorage = false;
+        }
+      } else {
+        console.warn('⚠️ OPFS not supported, using memory');
+        this.useStorage = false;
+      }
+    }
 
-    // ✅ Générer ou utiliser une clé de chiffrement
     let encryptionKey: CryptoKey | null = null;
     let encryptionSalt: Uint8Array | null = null;
     let exportedKey: string | undefined;
 
     if (options?.encrypt) {
       if (options.password) {
-        // Dériver une clé depuis le mot de passe
         const result = await EncryptionManager.deriveKeyFromPassword(options.password);
         encryptionKey = result.key;
         encryptionSalt = result.salt;
       } else if (options.encryptionKey) {
-        // Utiliser la clé fournie
         encryptionKey = options.encryptionKey;
       } else {
-        // Générer une clé aléatoire
         encryptionKey = await EncryptionManager.generateKey();
         exportedKey = await EncryptionManager.exportKey(encryptionKey);
       }
     }
 
-    // Découper en chunks
-    for (let i = 0; i < totalChunks; i++) {
-      const start = i * this.chunkSize;
-      const end = Math.min(start + this.chunkSize, file.size);
-      const blob = file.slice(start, end);
-      let arrayBuffer = await blob.arrayBuffer();
+    // Calculate file hash from chunk hashes as we go
+    const chunkHashes: string[] = [];
 
-      // Compresser le chunk
-      const compressed = await this.compressChunk(new Uint8Array(arrayBuffer));
-      let finalData = this.toArrayBuffer(compressed.buffer);
-      let encryptionMetadata: EncryptionMetadata | undefined;
-
-      // ✅ Chiffrer le chunk si demandé
-      if (encryptionKey) {
-        const encrypted: EncryptedData = await EncryptionManager.encryptChunk(
-          finalData,
-          encryptionKey
-        );
-        finalData = encrypted.data;
-        encryptionMetadata = encrypted.metadata;
-      }
-
-      // Calculer le hash du chunk final (compressé et chiffré)
-      const hash = await this.hashData(new Uint8Array(finalData));
-
-      chunks.push({
-        index: i,
-        data: finalData,
-        hash,
-        size: finalData.byteLength,
-        compressed: true,
-        encrypted: !!encryptionKey,
-        encryptionMetadata,
-      });
-
-      // Afficher progression
-      if ((i + 1) % 100 === 0 || i === totalChunks - 1) {
-        console.log(`Split progress: ${i + 1}/${totalChunks}`);
-      }
-    }
-
-    // Créer les métadonnées
     const metadata: ChunkMetadata = {
       fileId,
       fileName: file.name,
       fileSize: file.size,
-      fileHash,
+      fileHash: '', // Will be set after all chunks
       totalChunks,
       chunkSize: this.chunkSize,
       mimeType: file.type || 'application/octet-stream',
@@ -116,58 +121,153 @@ export class ChunkManager {
       timestamp: Date.now(),
     };
 
-    console.log(`✅ File split complete: ${totalChunks} chunks (encrypted: ${metadata.encrypted})`);
+    // Create async generator for chunks
+    const chunkGenerator = async function* (this: ChunkManager) {
+      const BATCH_SIZE = this.workerPool ? this.workerPool.size * 2 : 10;
 
-    return { chunks, metadata };
+      for (let batchStart = 0; batchStart < totalChunks; batchStart += BATCH_SIZE) {
+        const batchEnd = Math.min(batchStart + BATCH_SIZE, totalChunks);
+
+        const batchPromises: Promise<{ chunk: Chunk }>[] = [];
+        for (let i = batchStart; i < batchEnd; i++) {
+          batchPromises.push(this.processChunkOptimized(file, i, encryptionKey));
+        }
+
+        const batchResults = await Promise.all(batchPromises);
+
+        for (const result of batchResults) {
+          chunkHashes.push(result.chunk.hash);
+          yield result.chunk;
+        }
+
+        const progress = Math.round((batchEnd / totalChunks) * 100);
+        if (batchEnd % 500 === 0 || batchEnd === totalChunks) {
+          console.log(`Split progress: ${batchEnd}/${totalChunks} (${progress}%)`);
+        }
+      }
+
+      // Calculate final file hash
+      const fileHash = await this.hashData(new TextEncoder().encode(chunkHashes.join('')));
+      metadata.fileHash = fileHash;
+
+      console.log(`✅ File split complete: ${totalChunks} chunks (${Math.round(file.size / 1024 / 1024)}MB)`);
+
+      // Yield a special "complete" signal with the final metadata
+      yield { index: -1, data: new ArrayBuffer(0), hash: '', size: 0, compressed: false, encrypted: false, metadata: metadata } as any;
+    }.bind(this);
+
+    return { metadata, chunkGenerator: chunkGenerator() };
   }
 
-  /**
-   * Initialiser le manager avec des métadonnées
-   */
+  private async processChunkOptimized(
+    file: File,
+    index: number,
+    encryptionKey: CryptoKey | null
+  ): Promise<{ chunk: Chunk }> {
+    const start = index * this.chunkSize;
+    const end = Math.min(start + this.chunkSize, file.size);
+    const blob = file.slice(start, end);
+    const arrayBuffer = await blob.arrayBuffer();
+
+    let compressed: ArrayBuffer;
+    if (this.workerPool) {
+      try {
+        compressed = await this.workerPool.compress(arrayBuffer);
+      } catch (error) {
+        console.warn(`⚠️ Worker compression failed for chunk ${index}, using fallback:`, error);
+        compressed = await this.compressChunkFallback(new Uint8Array(arrayBuffer));
+      }
+    } else {
+      compressed = await this.compressChunkFallback(new Uint8Array(arrayBuffer));
+    }
+
+    let finalData = compressed;
+    let encryptionMetadata: EncryptionMetadata | undefined;
+
+    if (encryptionKey) {
+      const encrypted: EncryptedData = await EncryptionManager.encryptChunk(finalData, encryptionKey);
+      finalData = encrypted.data;
+      encryptionMetadata = encrypted.metadata;
+    }
+
+    const hashBuffer = await crypto.subtle.digest('SHA-256', this.toArrayBuffer(finalData));
+    const hash = Array.from(new Uint8Array(hashBuffer))
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('');
+
+    return {
+      chunk: {
+        index,
+        data: finalData,
+        hash,
+        size: finalData.byteLength,
+        compressed: true,
+        encrypted: !!encryptionKey,
+        encryptionMetadata,
+      },
+    };
+  }
+
   setMetadata(metadata: ChunkMetadata): void {
     this.metadata = metadata;
     this.bitmap = new Array(metadata.totalChunks).fill(false);
     this.chunks.clear();
     this.chunkEncryptionMetadata.clear();
+    this.decompressedCache.clear();
   }
 
-  /**
-   * Recevoir un chunk (avec métadonnées de chiffrement)
-   */
   async receiveChunk(chunk: Chunk): Promise<boolean> {
     if (!this.metadata) {
       throw new Error('Metadata not set');
     }
 
-    // Vérifier l'index
     if (chunk.index < 0 || chunk.index >= this.metadata.totalChunks) {
       throw new Error(`Invalid chunk index: ${chunk.index}`);
     }
 
     const chunkData = this.toArrayBuffer(chunk.data);
 
-    // Vérifier le hash
     const calculatedHash = await this.hashData(new Uint8Array(chunkData));
     if (calculatedHash !== chunk.hash) {
+      console.error(`❌ Chunk ${chunk.index} hash mismatch! Expected: ${chunk.hash}, Got: ${calculatedHash}`);
+      console.error(`Chunk data size: ${chunkData.byteLength} bytes`);
+      // Log first 32 bytes of received data for debugging
+      const dataView = new Uint8Array(chunkData.slice(0, 32));
+      console.error(`First 32 bytes: ${Array.from(dataView).map(b => b.toString(16).padStart(2, '0')).join(' ')}`);
       throw new Error(`Chunk ${chunk.index} hash mismatch`);
     }
 
-    // ✅ Stocker les métadonnées de chiffrement
+    // Ignore duplicate chunks if already received
+    if (this.bitmap[chunk.index]) {
+      console.warn(`Duplicate chunk ${chunk.index} ignored`);
+      return true;
+    }
+
     if (chunk.encryptionMetadata) {
       this.chunkEncryptionMetadata.set(chunk.index, chunk.encryptionMetadata);
     }
 
-    // Stocker le chunk
-    this.chunks.set(chunk.index, chunkData);
+    if (this.useStorage) {
+      try {
+        await this.storage.writeChunk(chunk.index, chunkData);
+      } catch (error) {
+        console.warn(`⚠️ Failed to write chunk ${chunk.index} to storage, using memory:`, error);
+        this.chunks.set(chunk.index, chunkData);
+      }
+    } else {
+      this.chunks.set(chunk.index, chunkData);
+    }
+
     this.bitmap[chunk.index] = true;
 
     return true;
   }
 
-  /**
-   * Assembler le fichier complet (avec déchiffrement)
-   */
   async assembleFile(decryptionKey?: CryptoKey): Promise<Blob> {
+    if (this.isDestroyed) {
+      throw new Error('chunkManager has been destroyed');
+    }
+
     if (!this.metadata) {
       throw new Error('Metadata not set');
     }
@@ -178,145 +278,136 @@ export class ChunkManager {
 
     console.log('🔧 Assembling file...');
 
-    const decompressedChunks: Uint8Array[] = [];
+    const BATCH_SIZE = this.workerPool ? this.workerPool.size * 2 : 10;
+    const parts: ArrayBuffer[] = new Array(this.metadata.totalChunks);
+    const chunkHashes: string[] = [];
 
-    // Décompresser et déchiffrer tous les chunks dans l'ordre
-    for (let i = 0; i < this.metadata.totalChunks; i++) {
-      let chunkData = this.chunks.get(i);
-      if (!chunkData) {
-        throw new Error(`Chunk ${i} missing`);
+    for (let batchStart = 0; batchStart < this.metadata.totalChunks; batchStart += BATCH_SIZE) {
+      const batchEnd = Math.min(batchStart + BATCH_SIZE, this.metadata.totalChunks);
+
+      const batchPromises: Promise<{ decompressed: Uint8Array; hash: string }>[] = [];
+      for (let i = batchStart; i < batchEnd; i++) {
+        batchPromises.push(this.processChunkForAssemblyOptimized(i, decryptionKey));
       }
 
-      // ✅ Déchiffrer si nécessaire
-      if (this.metadata.encrypted && decryptionKey) {
-        const chunkMetadata = this.getChunkEncryptionMetadata(i);
+      const batchResults = await Promise.all(batchPromises);
 
-        if (!chunkMetadata) {
-          throw new Error(`Encryption metadata missing for chunk ${i}`);
+      for (let j = 0; j < batchResults.length; j++) {
+        const index = batchStart + j;
+        const result = batchResults[j];
+
+        parts[index] = new Uint8Array(result.decompressed).buffer;
+        chunkHashes.push(result.hash);
+
+        if (this.useStorage) {
+          try {
+            await this.storage.deleteChunk(index);
+          } catch (error) {
+            console.warn(`⚠️ Failed to delete chunk ${index}:`, error);
+          }
         }
-
-        chunkData = await EncryptionManager.decryptChunk(
-          chunkData,
-          decryptionKey,
-          chunkMetadata
-        );
       }
 
-      const decompressed = await this.decompressChunk(new Uint8Array(chunkData));
-      decompressedChunks.push(decompressed);
-
-      // Afficher progression
-      if ((i + 1) % 100 === 0 || i === this.metadata.totalChunks - 1) {
-        console.log(`Assemble progress: ${i + 1}/${this.metadata.totalChunks}`);
+      const progress = Math.round((batchEnd / this.metadata.totalChunks) * 100);
+      if (batchEnd % 500 === 0 || batchEnd === this.metadata.totalChunks) {
+        console.log(`Assemble progress: ${batchEnd}/${this.metadata.totalChunks} (${progress}%)`);
       }
     }
 
-    // Calculer la taille totale
-    const totalSize = decompressedChunks.reduce(
-      (sum, chunk) => sum + chunk.length,
-      0
-    );
+    const finalHash = await this.hashData(new TextEncoder().encode(chunkHashes.join('')));
 
-    // Créer un buffer unique
-    const fileData = new Uint8Array(totalSize);
-    let offset = 0;
-
-    for (const chunk of decompressedChunks) {
-      fileData.set(chunk, offset);
-      offset += chunk.length;
-    }
-
-    // Vérifier le hash final
-    const finalHash = await this.hashData(fileData);
     if (finalHash !== this.metadata.fileHash) {
       throw new Error('Final file hash mismatch');
     }
 
     console.log('✅ File assembled successfully');
 
-    return new Blob([fileData], { type: this.metadata.mimeType });
+    return new Blob(parts.map(part => new Uint8Array(part)), { type: this.metadata.mimeType });
   }
 
-  /**
-   * Obtenir la progression
-   */
-  getProgress(): number {
-    if (!this.metadata) return 0;
+  private async processChunkForAssemblyOptimized(
+    index: number,
+    decryptionKey?: CryptoKey
+  ): Promise<{ decompressed: Uint8Array; hash: string }> {
+    const cached = this.decompressedCache.get(index);
+    if (cached) {
+      const hash = await this.hashData(cached);
+      return { decompressed: cached, hash };
+    }
 
-    const received = this.bitmap.filter(Boolean).length;
-    return (received / this.metadata.totalChunks) * 100;
+    let chunkData: ArrayBuffer;
+    if (this.useStorage) {
+      chunkData = await this.storage.readChunk(index);
+    } else {
+      const chunk = this.chunks.get(index);
+      if (!chunk) {
+        throw new Error(`Chunk ${index} missing`);
+      }
+      chunkData = chunk;
+    }
+
+    // compute hash on the stored chunk bytes (compressed/encrypted)
+    const originalHash = await this.hashData(new Uint8Array(chunkData));
+
+    if (this.metadata!.encrypted && decryptionKey) {
+      const chunkMetadata = this.chunkEncryptionMetadata.get(index);
+      if (!chunkMetadata) {
+        throw new Error(`Encryption metadata missing for chunk ${index}`);
+      }
+      chunkData = await EncryptionManager.decryptChunk(chunkData, decryptionKey, chunkMetadata);
+    }
+
+    let decompressed: Uint8Array;
+    if (this.workerPool) {
+      try {
+        const result = await this.workerPool.decompress(chunkData);
+        decompressed = new Uint8Array(result);
+      } catch (error) {
+        console.warn(`⚠️ Worker decompression failed for chunk ${index}, using fallback:`, error);
+        decompressed = await this.decompressChunkFallback(chunkData);
+      }
+    } else {
+      decompressed = await this.decompressChunkFallback(chunkData);
+    }
+
+    this.decompressedCache.set(index, decompressed);
+
+    // Use the hash of the original stored chunk (matches sender-side hash)
+    return { decompressed, hash: originalHash };
   }
 
-  /**
-   * Vérifier si le transfert est complet
-   */
-  isComplete(): boolean {
-    if (!this.metadata) return false;
-    return this.bitmap.every((received) => received);
-  }
-
-  /**
-   * Obtenir les chunks manquants
-   */
-  getMissingChunks(): number[] {
-    return this.bitmap
-      .map((received, index) => (received ? -1 : index))
-      .filter((index) => index !== -1);
-  }
-
-  /**
-   * Obtenir le nombre de chunks reçus
-   */
-  getReceivedChunks(): number {
-    return this.bitmap.filter(Boolean).length;
-  }
-
-  /**
-   * ✅ Obtenir les métadonnées de chiffrement d'un chunk
-   */
-  private getChunkEncryptionMetadata(index: number): EncryptionMetadata | undefined {
-    return this.chunkEncryptionMetadata.get(index);
-  }
-
-  /**
-   * Compresser un chunk
-   */
-  private async compressChunk(data: Uint8Array): Promise<Uint8Array> {
-    return new Promise((resolve, reject) => {
+  private async compressChunkFallback(data: Uint8Array): Promise<ArrayBuffer> {
+    const { compress } = await import('fflate');
+    return new Promise<ArrayBuffer>((resolve, reject) => {
       compress(data, { level: 6 }, (err, compressed) => {
         if (err) reject(err);
-        else resolve(compressed);
+        else resolve((compressed as Uint8Array).buffer as ArrayBuffer);
       });
     });
   }
 
-  /**
-   * Décompresser un chunk
-   */
-  private async decompressChunk(data: Uint8Array): Promise<Uint8Array> {
-    return new Promise((resolve, reject) => {
-      decompress(data, (err, decompressed) => {
-        if (err) reject(err);
-        else resolve(decompressed);
+  private async decompressChunkFallback(data: ArrayBuffer | ArrayBufferView): Promise<Uint8Array> {
+    const { decompress } = await import('fflate');
+    const input: Uint8Array = ArrayBuffer.isView(data)
+      ? new Uint8Array((data as ArrayBufferView).buffer, (data as ArrayBufferView).byteOffset, (data as ArrayBufferView).byteLength)
+      : new Uint8Array(data as ArrayBuffer);
+    return new Promise<Uint8Array>((resolve, reject) => {
+      decompress(input, (err, decompressed) => {
+        if (err) return reject(err);
+        if (decompressed instanceof Uint8Array) return resolve(decompressed);
+        resolve(new Uint8Array(decompressed as unknown as ArrayBuffer));
       });
     });
   }
 
-  /**
-   * ✅ CORRECTION : Calculer le hash SHA-256 de données
-   * Convertit en ArrayBuffer natif pour compatibilité TypeScript stricte
-   */
-  private async hashData(data: Uint8Array): Promise<string> {
-    // Créer un nouveau ArrayBuffer natif pour éviter les problèmes de type
-    const buffer = new Uint8Array(data).buffer;
+  private async hashData(data: ArrayBuffer | ArrayBufferView): Promise<string> {
+    const bufferArg = ArrayBuffer.isView(data) ? (data as ArrayBufferView).buffer : (data as ArrayBuffer);
+    const buffer = this.toArrayBuffer(bufferArg);
     const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
     const hashArray = Array.from(new Uint8Array(hashBuffer));
     return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
   }
 
-  /**
-   * Convertir ArrayBufferLike en ArrayBuffer
-   */
   private toArrayBuffer(buffer: ArrayBuffer | ArrayBufferLike): ArrayBuffer {
     if (buffer instanceof ArrayBuffer) {
       return buffer;
@@ -329,32 +420,85 @@ export class ChunkManager {
     return arrayBuffer;
   }
 
-  /**
-   * ✅ Convertir ArrayBuffer en base64
-   */
   private arrayBufferToBase64(buffer: ArrayBuffer | ArrayBufferLike): string {
     const bytes = new Uint8Array(buffer);
+    const chunkSize = 8192;
     let binary = '';
-    for (let i = 0; i < bytes.byteLength; i++) {
-      binary += String.fromCharCode(bytes[i]);
+    for (let i = 0; i < bytes.length; i += chunkSize) {
+      const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
+      binary += String.fromCharCode.apply(null, Array.from(chunk));
     }
     return btoa(binary);
   }
 
-  /**
-   * Générer un ID de fichier unique
-   */
   private generateFileId(): string {
     return `file_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`;
   }
 
-  /**
-   * Réinitialiser le manager
-   */
+  getProgress(): number {
+    if (!this.metadata) return 0;
+    const received = this.bitmap.filter(Boolean).length;
+    return (received / this.metadata.totalChunks) * 100;
+  }
+
+  isComplete(): boolean {
+    if (!this.metadata) return false;
+    return this.bitmap.every((received) => received);
+  }
+
+  getMissingChunks(): number[] {
+    return this.bitmap.map((received, index) => (received ? -1 : index)).filter((index) => index !== -1);
+  }
+
+  getReceivedChunks(): number {
+    return this.bitmap.filter(Boolean).length;
+  }
+
+  getStats() {
+    return {
+      workerPool: this.workerPool ? {
+        size: this.workerPool.size,
+        available: this.workerPool.availableCount,
+        queueLength: this.workerPool.queueLength,
+      } : null,
+      cache: this.decompressedCache.getStats(),
+      storage: {
+        enabled: this.useStorage,
+        supported: this.storage.isSupported(),
+      },
+      metadata: this.metadata,
+      progress: this.getProgress(),
+      received: this.getReceivedChunks(),
+      total: this.metadata?.totalChunks ?? 0,
+    };
+  }
+
   reset(): void {
     this.bitmap = [];
     this.chunks.clear();
     this.metadata = null;
     this.chunkEncryptionMetadata.clear();
+    this.decompressedCache.clear();
+  }
+
+  async destroy(): Promise<void> {
+    if (this.isDestroyed) return;
+
+    this.isDestroyed = true;
+
+    if (this.workerPool) {
+      this.workerPool.terminate();
+      this.workerPool = null;
+    }
+
+    this.decompressedCache.clear();
+
+    if (this.useStorage) {
+      await this.storage.cleanup();
+    }
+
+    this.reset();
+
+    console.log('✅ chunkManager destroyed');
   }
 }

@@ -23,15 +23,10 @@ if (typeof window !== 'undefined') {
             // Try native file picker save if available
             if ('showSaveFilePicker' in window) {
                 try {
+                    // Use a minimal options object to avoid invalid accept patterns in some browsers
                     // @ts-ignore
                     const handle = await (window as any).showSaveFilePicker({
                         suggestedName: filename,
-                        types: [
-                            {
-                                description: 'All files',
-                                accept: { '*/*': ['.*'] },
-                            },
-                        ],
                     });
                     const writable = await handle.createWritable();
                     await writable.write(blob);

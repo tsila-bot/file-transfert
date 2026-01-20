@@ -15,6 +15,8 @@ export interface PeerConnectionOptions {
   onDataChannelClose?: () => void;
   onData?: (data: any) => void;
   onError?: (error: Error) => void;
+  connectionTimeout?: number; // override default connection timeout (ms)
+  maxRetries?: number; // number of automatic reconnect attempts on timeout/failure
 }
 
 export interface ConnectionStats {
@@ -34,6 +36,8 @@ export interface SignalData {
 export type MessageType =
   | 'chat'            // Message de chat
   | 'metadata'        // Métadonnées de fichier
+  | 'metadata_update' // Mise à jour des métadonnées
+  | 'chunk_metadata'  // Métadonnées de chunk
   | 'chunk'           // Morceau de fichier
   | 'ack'             // Accusé de réception général
   | 'heartbeat'       // Ping pour vérifier la connexion
