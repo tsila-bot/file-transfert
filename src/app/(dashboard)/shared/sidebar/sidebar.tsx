@@ -32,7 +32,7 @@ export default function Sidebar({ isSidebarOpen, isDarkMode }: SidebarProps) {
       id: 'dashboard',
       label: 'Tableau de bord',
       icon: FaHome,
-      href: '/dashboard',
+      href: '/dashboard/home',
     },
     {
       id: 'transfert',
