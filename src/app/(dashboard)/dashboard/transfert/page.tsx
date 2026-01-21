@@ -188,7 +188,7 @@ export default function TransfertsPage({ children }: TransfertsPageProps) {
   const totalSize = files.reduce((sum, file) => sum + file.size, 0);
 
   return (
-    <div className="p-6">
+    <div className="px-6">
       {/* Gestionnaire de peers (invisible) */}
       <PeerManager />
       <div className="flex flex-col lg:flex-row items-start justify-start gap-3 w-full mx-auto">
