@@ -1,15 +1,21 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { usePeerStore } from '@/stores/peerStore';
 import ContactList from '@/components/contacts/ContactList';
 import ContactSearch from '@/components/contacts/ContactSearch';
-import { Phone, MessageCircle } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import { useCall } from '@/shared/hooks/useCall';
 
 export default function ContactsPage() {
   const peerStore = usePeerStore();
+  const router = useRouter();
+  const { startCall } = useCall();
+  
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
+  const [isCallingContactId, setIsCallingContactId] = useState<string | null>(null);
+  const [isClient, setIsClient] = useState(false);
   
   const peers = peerStore.getOnlinePeers();
 
@@ -44,15 +50,53 @@ export default function ContactsPage() {
     return filtered;
   }, [contacts, searchQuery, statusFilter]);
 
-  const handleCall = (contactId: string) => {
-    console.log('Appel à:', contactId);
-    // TODO: Implémenter l'appel WebRTC
-  };
+  // Marquer comme côté client pour éviter les problèmes SSR
+  useEffect(() => {
+    setIsClient(true);
+  }, []);
 
-  const handleMessage = (contactId: string) => {
-    console.log('Message à:', contactId);
-    // TODO: Naviguer vers le chat avec ce contact
-  };
+  const handleCall = useCallback(
+    async (contactId: string) => {
+      try {
+        setIsCallingContactId(contactId);
+        
+        const contact = contacts.find((c) => c.id === contactId);
+        if (!contact) {
+          console.error('Contact non trouvé');
+          setIsCallingContactId(null);
+          return;
+        }
+
+        console.log('🎯 Appel à:', contact.name);
+
+        // Démarrer l'appel
+        await startCall(contactId, contact.name);
+
+        // Rediriger vers la page d'appel seulement si succès
+        setTimeout(() => {
+          router.push('/calls');
+          setIsCallingContactId(null);
+        }, 500);
+      } catch (error) {
+        console.error('Erreur lors du démarrage de l\'appel:', error);
+        // Ne pas afficher d'alerte - useCall gère déjà les erreurs
+        setIsCallingContactId(null);
+      }
+    },
+    [contacts, startCall, router]
+  );
+
+  const handleMessage = useCallback(
+    (contactId: string) => {
+      // Rediriger vers le chat avec ce contact
+      router.push(`/chat?contactId=${contactId}`);
+    },
+    [router]
+  );
+
+  if (!isClient) {
+    return null; // Évite les problèmes SSR
+  }
 
   return (
     <div className="space-y-6">

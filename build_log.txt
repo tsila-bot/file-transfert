@@ -1,0 +1,41 @@
+
+> frontend@0.1.0 build
+> next build
+
+ ⚠ `images.domains` is deprecated in favor of `images.remotePatterns`. Please update next.config.js to protect your application from malicious users.
+ ⚠ Invalid next.config.js options detected: 
+ ⚠     Unrecognized key(s) in object: 'swcMinify'
+ ⚠ See more info here: https://nextjs.org/docs/messages/invalid-next-config
+   ▲ Next.js 16.0.8 (Turbopack)
+   - Environments: .env.local
+
+ ⚠ The "middleware" file convention is deprecated. Please use "proxy" instead. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+   Creating an optimized production build ...
+
+> Build error occurred
+Error: Turbopack build failed with 1 errors:
+./src/shared/hooks/useTeam.ts:256:9
+Parsing ecmascript source code failed
+[0m [90m 254 |[39m         [36mlet[39m team [33m=[39m response[33m.[39mteam[33m;[39m
+ [90m 255 |[39m         }
+[31m[1m>[22m[39m[90m 256 |[39m         console[33m.[39mlog([32m'✅ Team extracted:'[39m[33m,[39m team)[33m;[39m
+ [90m     |[39m         [31m[1m^[22m[39m
+ [90m 257 |[39m         [36mif[39m (team [33m&&[39m team[33m.[39mid [33m&&[39m team[33m.[39mname) {
+ [90m 258 |[39m           addTeam(team)[33m;[39m
+ [90m 259 |[39m           [36mreturn[39m team[33m;[39m[0m
+
+Expected a semicolon
+
+Import traces:
+  Client Component Browser:
+    ./src/shared/hooks/useTeam.ts [Client Component Browser]
+    ./src/app/(dashboard)/teams/page.tsx [Client Component Browser]
+    ./src/app/(dashboard)/teams/page.tsx [Server Component]
+
+  Client Component SSR:
+    ./src/shared/hooks/useTeam.ts [Client Component SSR]
+    ./src/app/(dashboard)/teams/page.tsx [Client Component SSR]
+    ./src/app/(dashboard)/teams/page.tsx [Server Component]
+
+
+    at <unknown> (./src/shared/hooks/useTeam.ts:256:9)

@@ -1,6 +1,7 @@
 "use client"
 
 import React, { useCallback, useState, useMemo } from 'react'
+import { Eye, EyeOff } from 'lucide-react'
 import '@/core/P2P/receiveHandler'
 import { getTransferManager } from '@/core/P2P/TransferManager'
 import { useInitializeTransferStore, useTransferStore } from '@/stores/transferStore'
@@ -27,7 +28,18 @@ export default function TransferZone() {
 		setSelectedPeer(active)
 	}, [peerStore.activePeerIds])
 	const [password, setPassword] = useState('')
+	const [showPassword, setShowPassword] = useState(false)
 	const [compress, setCompress] = useState(true)
+
+	// État pour le dialog de mot de passe
+	const [passwordDialog, setPasswordDialog] = useState<{ fileId: string; peerId: string; show: boolean }>({
+		fileId: '',
+		peerId: '',
+		show: false,
+	})
+	const [passwordInput, setPasswordInput] = useState('')
+	const [showPasswordDialog, setShowPasswordDialog] = useState(false)
+	const [passwordDialogError, setPasswordDialogError] = useState('')
 
 	const manager = getTransferManager()
 	const [connectedPeers, setConnectedPeers] = useState(() => manager.getConnectedPeers())
@@ -72,7 +84,7 @@ export default function TransferZone() {
 
 		try {
 			await manager.sendFile(file, targetPeer, {
-				encrypt: !!password,
+				encrypt: true, // ✅ Chiffrement activé par défaut
 				password: password || undefined,
 			})
 			forceRerender((v) => v + 1)
@@ -107,7 +119,7 @@ export default function TransferZone() {
 
 		try {
 			await manager.sendFile(file, targetPeer, {
-				encrypt: !!password,
+				encrypt: true, // ✅ Chiffrement activé par défaut
 				password: password || undefined,
 			})
 			forceRerender((v) => v + 1)
@@ -117,8 +129,63 @@ export default function TransferZone() {
 		}
 	}, [manager, password, selectedPeer, connectedPeers])
 
+	// Fonction pour accepter un transfert (avec ou sans mot de passe)
+	const handleAcceptTransfer = useCallback(
+		async (fileId: string, peerId: string) => {
+			const transfer = transfers.find((t) => t.id === fileId)
+
+			// Si le transfert est protégé par mot de passe, afficher le dialog
+			if (transfer?.metadata?.encrypted && transfer?.metadata?.passwordProtected) {
+				setPasswordDialog({ fileId, peerId, show: true })
+				setPasswordInput('')
+				setPasswordDialogError('')
+				return
+			}
+
+			// Sinon, accepter directement
+			try {
+				manager.acceptTransfer(fileId, peerId)
+				forceRerender((v) => v + 1)
+			} catch (err) {
+				console.error('Failed to accept transfer', err)
+				alert('Erreur: ' + (err as Error).message)
+			}
+		},
+		[transfers, manager]
+	)
+
+	// Fonction pour soumettre le mot de passe
+	const handleSubmitPassword = useCallback(
+		async (fileId: string, peerId: string, password: string) => {
+			if (!password.trim()) {
+				setPasswordDialogError('Veuillez entrer un mot de passe')
+				return
+			}
+
+			try {
+				await manager.acceptTransferWithPassword(fileId, peerId, password)
+				setPasswordDialog({ fileId: '', peerId: '', show: false })
+				setPasswordInput('')
+				setPasswordDialogError('')
+				forceRerender((v) => v + 1)
+			} catch (err) {
+				console.error('Failed to accept transfer with password', err)
+				setPasswordDialogError('Mot de passe incorrect ou erreur de déchiffrement')
+			}
+		},
+		[manager]
+	)
+
+	// Fonction pour fermer le dialog
+	const handleClosePasswordDialog = useCallback(() => {
+		setPasswordDialog({ fileId: '', peerId: '', show: false })
+		setPasswordInput('')
+		setPasswordDialogError('')
+	}, [])
+
 	return (
-		<div className="p-4 text-black">
+		<>
+			<div className="p-4 text-black relative">
 			<h2 className="text-lg font-semibold mb-2">Transfert de fichiers</h2>
 
 			<div className="mb-3">
@@ -148,12 +215,22 @@ export default function TransferZone() {
 
 			<div className="flex gap-3 items-center mb-4">
 				<label className="text-sm">Mot de passe (optionnel)</label>
-				<input
-					type="password"
-					value={password}
-					onChange={(e) => setPassword(e.target.value)}
-					className="border rounded p-2 text-black"
-				/>
+				<div className="relative flex items-center">
+					<input
+						type={showPassword ? 'text' : 'password'}
+						value={password}
+						onChange={(e) => setPassword(e.target.value)}
+						className="border rounded p-2 pr-10 text-black"
+					/>
+					<button
+						type="button"
+						onClick={() => setShowPassword(!showPassword)}
+						className="absolute right-3 text-gray-600 hover:text-gray-800 transition-colors"
+						title={showPassword ? 'Masquer' : 'Afficher'}
+					>
+						{showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+					</button>
+				</div>
 				<label className="flex items-center gap-2 ml-4">
 					<input type="checkbox" checked={compress} onChange={(e) => setCompress(e.target.checked)} />
 					<span className="text-sm">Compression</span>
@@ -212,15 +289,9 @@ export default function TransferZone() {
 								<div className="mt-3 flex gap-2">
 									<button
 										className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
-										onClick={() => {
-											try {
-												manager.acceptTransfer(t.id, t.peerId)
-											} catch (err) {
-												console.error('Failed to accept transfer', err)
-											}
-										}}
+										onClick={() => handleAcceptTransfer(t.id, t.peerId)}
 									>
-										Accepter
+										{t.metadata?.encrypted && t.metadata?.passwordProtected ? '🔒 Accepter' : 'Accepter'}
 									</button>
 									<button
 										className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
@@ -252,5 +323,67 @@ export default function TransferZone() {
 				</div>
 			</div>
 		</div>
+
+		{/* Dialog pour demander le mot de passe */}
+		{passwordDialog.show && (
+			<div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+				<div className="bg-white rounded-lg shadow-xl max-w-sm w-full p-6">
+					<h3 className="text-lg font-semibold mb-4 text-gray-900">🔒 Fichier protégé par mot de passe</h3>
+
+					<p className="text-gray-600 mb-4 text-sm">
+						Ce fichier est chiffré avec un mot de passe. Veuillez entrer le mot de passe pour le recevoir.
+					</p>
+
+					{passwordDialogError && (
+						<div className="mb-4 p-2 bg-red-50 border border-red-200 rounded text-sm text-red-700">
+							❌ {passwordDialogError}
+						</div>
+					)}
+
+					<div className="relative flex items-center mb-2">
+						<input
+							type={showPasswordDialog ? 'text' : 'password'}
+							placeholder="Entrez le mot de passe..."
+							value={passwordInput}
+							onChange={(e) => {
+								setPasswordInput(e.target.value)
+								setPasswordDialogError('')
+							}}
+							onKeyDown={(e) => {
+								if (e.key === 'Enter') {
+									handleSubmitPassword(passwordDialog.fileId, passwordDialog.peerId, passwordInput)
+								}
+							}}
+							className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg text-black focus:outline-none focus:ring-2 focus:ring-indigo-500"
+							autoFocus
+						/>
+						<button
+							type="button"
+							onClick={() => setShowPasswordDialog(!showPasswordDialog)}
+							className="absolute right-3 text-gray-600 hover:text-gray-800 transition-colors"
+							title={showPasswordDialog ? 'Masquer' : 'Afficher'}
+						>
+							{showPasswordDialog ? <EyeOff size={18} /> : <Eye size={18} />}
+						</button>
+					</div>
+
+					<div className="flex gap-3 justify-end">
+						<button
+							onClick={handleClosePasswordDialog}
+							className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+						>
+							Annuler
+						</button>
+						<button
+							onClick={() => handleSubmitPassword(passwordDialog.fileId, passwordDialog.peerId, passwordInput)}
+							className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
+						>
+							Accepter
+						</button>
+					</div>
+				</div>
+			</div>
+		)}
+		</>
 	)
 }

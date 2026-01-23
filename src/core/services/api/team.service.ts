@@ -1,51 +1,26 @@
 // frontend/src/core/services/api/team.service.ts
 
 import { apiClient } from './client.service';
-import { User } from './auth.service';
-
-export interface Team {
-  id: string;
-  name: string;
-  description?: string;
-  avatar?: string;
-  creatorId: string;
-  creatorName: string;
-  membersCount: number;
-  isPublic: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface TeamMember {
-  id: string;
-  userId: string;
-  name: string;
-  avatar?: string;
-  role: 'admin' | 'member';
-  joinedAt: string;
-  status: 'active' | 'inactive';
-}
+import type { Team, TeamMember } from '@/types/types';
 
 export interface CreateTeamData {
   name: string;
   description?: string;
-  isPublic?: boolean;
   avatar?: string;
 }
 
 export interface UpdateTeamData {
   name?: string;
   description?: string;
-  isPublic?: boolean;
   avatar?: string;
 }
 
 export interface AddMemberData {
   userId: string;
-  role?: 'admin' | 'member';
+  role?: 'ADMIN' | 'MEMBER' | 'GUEST';
 }
 
-export const teamAPI = {
+export const teamService = {
   /**
    * Récupérer toutes les équipes de l'utilisateur
    */
@@ -144,11 +119,11 @@ export const teamAPI = {
   },
 
   /**
-   * Accepter une invitation à rejoindre une équipe
+   * Rejoindre une équipe par code d'invitation
    */
-  async acceptTeamInvitation(teamId: string, invitationToken: string): Promise<{ team: Team }> {
-    const response = await apiClient.post(`/api/teams/${teamId}/accept-invitation`, {
-      token: invitationToken,
+  async joinTeamByCode(inviteCode: string): Promise<{ member: TeamMember; team: Team }> {
+    const response = await apiClient.post('/api/teams/join', {
+      inviteCode,
     });
     return response.data;
   },

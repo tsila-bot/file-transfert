@@ -102,6 +102,14 @@ export class P2PManager {
   ): Promise<PeerConnection> {
     console.log(`📞 Accepting connection from ${peerName}...`);
 
+    // Close any existing connection with this peer before creating a new one
+    if (this.connections.has(peerId)) {
+      const existing = this.connections.get(peerId)!;
+      console.log(`🧹 Closing existing connection with ${peerId} before accepting new one`);
+      existing.close();
+      this.connections.delete(peerId);
+    }
+
     // Créer une nouvelle connexion (receveur)
     const connection = new PeerConnection({
       peerId,

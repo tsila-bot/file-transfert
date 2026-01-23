@@ -556,6 +556,26 @@ export class PeerConnection extends EventEmitter {
   private setupConnectionHandlers(): void {
     if (!this.peerConnection) return;
 
+    // Handler pour recevoir les pistes audio/vidéo
+    this.peerConnection.ontrack = (event) => {
+      console.log(`📹 Received ${event.track.kind} track from peer`);
+      console.log(`📊 Track state: ${event.track.readyState}, enabled: ${event.track.enabled}`);
+      
+      // Créer ou obtenir le stream distant
+      if (event.streams && event.streams.length > 0) {
+        const remoteStream = event.streams[0];
+        console.log(`✅ Remote stream received with ${remoteStream.getTracks().length} tracks`);
+        
+        // Émettre l'événement pour que le composant UI puisse l'afficher
+        this.emit('remotestream', remoteStream);
+      } else {
+        console.warn('⚠️ No stream provided with track');
+      }
+      
+      // Émettre aussi l'événement de piste pour plus de flexibilité
+      this.emit('track', event.track);
+    };
+
     this.peerConnection.onicecandidate = (event) => {
       if (event.candidate) {
         console.log('🧊 ICE candidate generated');
@@ -931,6 +951,127 @@ export class PeerConnection extends EventEmitter {
     if (this.connectionState !== state) {
       this.connectionState = state;
       this.emit('statechange', state);
+    }
+  }
+
+  /**
+   * Ajouter un stream local à la connexion P2P
+   * @param stream - MediaStream contenant les pistes audio/vidéo à envoyer
+   */
+  public async addStream(stream: MediaStream): Promise<void> {
+    if (!this.peerConnection) {
+      console.warn(`⚠️ No peer connection for ${this.peerName}`);
+      return;
+    }
+
+    try {
+      const tracks = stream.getTracks();
+      console.log(`📤 Adding ${tracks.length} tracks to ${this.peerName}`);
+
+      for (const track of tracks) {
+        try {
+          await this.peerConnection.addTrack(track, stream);
+          console.log(`✅ Added ${track.kind} track to ${this.peerName}`);
+        } catch (error) {
+          console.error(`Failed to add ${track.kind} track:`, error);
+        }
+      }
+    } catch (error) {
+      console.error(`Error adding stream to ${this.peerName}:`, error);
+      this.emit('error', error);
+    }
+  }
+
+  /**
+   * Retirer toutes les pistes d'un stream de la connexion P2P
+   */
+  public async removeStream(): Promise<void> {
+    if (!this.peerConnection) {
+      console.warn(`⚠️ No peer connection for ${this.peerName}`);
+      return;
+    }
+
+    try {
+      const senders = this.peerConnection.getSenders();
+      console.log(`🛑 Removing ${senders.length} senders from ${this.peerName}`);
+
+      for (const sender of senders) {
+        try {
+          await this.peerConnection.removeTrack(sender);
+          console.log(`✅ Removed ${sender.track?.kind || 'unknown'} track from ${this.peerName}`);
+        } catch (error) {
+          console.error(`Failed to remove track:`, error);
+        }
+      }
+    } catch (error) {
+      console.error(`Error removing stream from ${this.peerName}:`, error);
+      this.emit('error', error);
+    }
+  }
+
+  /**
+   * Nettoyer complètement les ressources média (audio/vidéo) tout en gardant la connexion P2P active
+   * pour les transferts de fichiers. Arrête les timers et désactive les media handlers.
+   */
+  public async cleanupMedia(): Promise<void> {
+    console.log(`🧹 Cleaning up media resources for ${this.peerName}`);
+
+    try {
+      // 1. Retirer tous les senders (pistes audio/vidéo)
+      await this.removeStream();
+
+      // 2. Arrêter les timers
+      if (this.heartbeatInterval) {
+        clearInterval(this.heartbeatInterval);
+        this.heartbeatInterval = null;
+        console.log('⏹️ Stopped heartbeat');
+      }
+
+      if (this.connectionTimeout) {
+        clearTimeout(this.connectionTimeout);
+        this.connectionTimeout = null;
+        console.log('⏹️ Stopped connection timeout');
+      }
+
+      // 3. Désactiver les media handlers mais garder la connexion ouverte
+      if (this.peerConnection) {
+        // Désactiver le handler ontrack pour éviter de recevoir de nouvelles pistes
+        this.peerConnection.ontrack = null;
+        console.log('🔇 Disabled ontrack handler');
+
+        // Désactiver les handlers de state mais garder la connexion
+        // On ne veut PAS fermer la connexion, juste arrêter de traiter les media events
+        // La connexion reste ouverte pour les data channels (transferts de fichiers)
+      }
+
+      console.log(`✅ Media cleanup complete for ${this.peerName} (connection kept alive for transfers)`);
+    } catch (error) {
+      console.error(`Error during media cleanup for ${this.peerName}:`, error);
+    }
+  }
+
+  /**
+   * Mettre à jour l'état des pistes audio (toggle mute/unmute)
+   * @param enabled - true pour activer, false pour désactiver
+   */
+  public updateAudioTrackState(enabled: boolean): void {
+    if (!this.peerConnection) {
+      console.warn(`⚠️ No peer connection for ${this.peerName}`);
+      return;
+    }
+
+    try {
+      // Obtenir tous les senders qui envoient de l'audio
+      this.peerConnection.getSenders().forEach((sender) => {
+        if (sender.track?.kind === 'audio') {
+          if (sender.track) {
+            sender.track.enabled = enabled;
+            console.log(`🎤 Updated audio track for ${this.peerName}: ${enabled ? 'enabled' : 'disabled'}`);
+          }
+        }
+      });
+    } catch (error) {
+      console.error(`Error updating audio track state for ${this.peerName}:`, error);
     }
   }
 }

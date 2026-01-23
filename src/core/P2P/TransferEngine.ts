@@ -936,6 +936,7 @@ export class TransferEngine {
           eta: 0,
         },
         startedAt: new Date(),
+        metadata: metadata,
       };
 
       this.transfers.set(metadata.fileId, transfer);

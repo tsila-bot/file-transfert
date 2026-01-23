@@ -89,8 +89,8 @@ export default function ChatWindow() {
     const cleanup = socket.on('chat:conversation_started', (data: any) => {
       console.log('✨ New conversation created:', data);
       const newConversation: Conversation = {
-        id: data.userId || data.id,
-        userId: data.userId || data.id,
+        id: data.conversationId, // ✅ Use conversation ID from backend
+        userId: data.userId || data.id, // Keep userId for user reference
         userName: data.userName || data.name,
         lastMessage: '',
         lastMessageTime: new Date(),

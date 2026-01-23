@@ -6,7 +6,7 @@ export { authAPI } from './auth.service';
 export { usersAPI } from './users.service';
 export { chatAPI } from './chat.service';
 export { callAPI } from './call.service';
-export { teamAPI } from './team.service';
+export { teamService } from './team.service';
 export { transferAPI } from './transfer.service';
 export { publicLinkAPI } from './publicLink.service';
 
@@ -34,12 +34,12 @@ export type {
   CallStats,
 } from './call.service';
 export type {
-  Team,
-  TeamMember,
   CreateTeamData,
   UpdateTeamData,
   AddMemberData,
 } from './team.service';
+export type { Team, TeamMember } from '@/types/types';
+export type { GroupMessage } from '@/types/types';
 export type {
   FileTransfer,
   TransferOffer,

@@ -2,12 +2,16 @@
 'use client';
 
 import { PeerManager } from '@/components/peers/PeerManager';
+import { CallListener } from '@/components/call/CallListener';
 import { Sidebar } from '@/components/layout/Sidebar';
 import { Header } from '@/components/layout/Header';
 
 export default function DashboardLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-screen bg-gray-50">
+      {/* Écouter les appels entrants GLOBALEMENT */}
+      <CallListener />
+
       {/* Sidebar */}
       <Sidebar />
 

@@ -1,35 +1,35 @@
 // frontend/src/core/services/api/chat.service.ts
 
 import { apiClient } from './client.service';
+import type { GroupMessage } from '@/types/types';
 
 export interface ChatMessage {
   id: string;
-  conversationId: string;
-  senderId: string;
-  senderName: string;
-  senderAvatar?: string;
-  content: string;
+  userId: string;
+  message: string;
+  user?: {
+    id: string;
+    name: string;
+    avatar?: string;
+  };
   createdAt: string;
-  updatedAt: string;
-  isRead: boolean;
-  readAt?: string;
+  isEdited?: boolean;
 }
 
 export interface Conversation {
   id: string;
-  participantId: string;
-  participantName: string;
-  participantAvatar?: string;
+  userId: string;
+  userName: string;
+  avatar?: string;
   lastMessage?: string;
-  lastMessageTime?: string;
+  lastMessageTime?: Date;
   unreadCount: number;
-  createdAt: string;
-  updatedAt: string;
 }
 
 export interface SendMessageData {
-  conversationId: string;
-  content: string;
+  message: string;
+  receiverId?: string;
+  messageType?: string;
 }
 
 export interface CreateConversationData {
@@ -37,7 +37,7 @@ export interface CreateConversationData {
 }
 
 export interface UpdateMessageData {
-  content: string;
+  message: string;
 }
 
 export interface TypingIndicatorData {
@@ -47,97 +47,82 @@ export interface TypingIndicatorData {
 
 export const chatAPI = {
   /**
-   * Récupérer les messages d'une conversation
+   * Envoyer un message de groupe
    */
-  async getMessages(
-    conversationId: string,
-    limit: number = 50,
-    offset: number = 0
-  ): Promise<{ messages: ChatMessage[]; total: number }> {
-    const response = await apiClient.get(`/api/chat/conversations/${conversationId}/messages`, {
-      params: { limit, offset },
+  async sendGroupMessage(
+    teamId: string,
+    message: string,
+    messageType: string = 'TEXT'
+  ): Promise<{ success: boolean; data: GroupMessage }> {
+    const response = await apiClient.post(`/api/chat/teams/${teamId}/messages`, {
+      message,
+      messageType,
     });
     return response.data;
   },
 
   /**
-   * Envoyer un message
+   * Récupérer les messages de groupe
    */
-  async sendMessage(data: SendMessageData): Promise<{ message: ChatMessage }> {
+  async getGroupMessages(
+    teamId: string,
+    skip: number = 0,
+    take: number = 50
+  ): Promise<{ success: boolean; data: { messages: GroupMessage[]; total: number } }> {
+    const response = await apiClient.get(`/api/chat/teams/${teamId}/messages`, {
+      params: { skip, take },
+    });
+    return response.data;
+  },
+
+  /**
+   * Envoyer un message direct
+   */
+  async sendDirectMessage(data: SendMessageData): Promise<{ success: boolean; data: ChatMessage }> {
     const response = await apiClient.post('/api/chat/messages', data);
+    return response.data;
+  },
+
+  /**
+   * Récupérer l'historique de messages
+   */
+  async getConversationMessages(
+    conversationId: string,
+    skip: number = 0,
+    take: number = 50
+  ): Promise<{ success: boolean; data: { messages: ChatMessage[]; total: number } }> {
+    const response = await apiClient.get(`/api/chat/conversations/${conversationId}/messages`, {
+      params: { skip, take },
+    });
+    return response.data;
+  },
+
+  /**
+   * Éditer un message
+   */
+  async editMessage(messageId: string, data: UpdateMessageData): Promise<{ success: boolean; data: ChatMessage }> {
+    const response = await apiClient.put(`/api/chat/messages/${messageId}`, data);
     return response.data;
   },
 
   /**
    * Supprimer un message
    */
-  async deleteMessage(messageId: string): Promise<{ message: string }> {
+  async deleteMessage(messageId: string): Promise<{ success: boolean }> {
     const response = await apiClient.delete(`/api/chat/messages/${messageId}`);
     return response.data;
   },
 
   /**
-   * Modifier un message
-   */
-  async updateMessage(
-    messageId: string,
-    data: UpdateMessageData
-  ): Promise<{ message: ChatMessage }> {
-    const response = await apiClient.patch(`/api/chat/messages/${messageId}`, data);
-    return response.data;
-  },
-
-  /**
-   * Récupérer toutes les conversations
+   * Récupérer les conversations de l'utilisateur
    */
   async getConversations(
-    limit: number = 20,
-    offset: number = 0
-  ): Promise<{ conversations: Conversation[]; total: number }> {
+    skip: number = 0,
+    take: number = 50
+  ): Promise<{ success: boolean; data: { conversations: Conversation[]; total: number } }> {
     const response = await apiClient.get('/api/chat/conversations', {
-      params: { limit, offset },
+      params: { skip, take },
     });
-    return response.data;
-  },
-
-  /**
-   * Créer une nouvelle conversation
-   */
-  async createConversation(data: CreateConversationData): Promise<{ conversation: Conversation }> {
-    const response = await apiClient.post('/api/chat/conversations', data);
-    return response.data;
-  },
-
-  /**
-   * Supprimer une conversation
-   */
-  async deleteConversation(conversationId: string): Promise<{ message: string }> {
-    const response = await apiClient.delete(`/api/chat/conversations/${conversationId}`);
-    return response.data;
-  },
-
-  /**
-   * Marquer les messages comme lus
-   */
-  async markAsRead(conversationId: string): Promise<{ message: string }> {
-    const response = await apiClient.patch(
-      `/api/chat/conversations/${conversationId}/mark-read`
-    );
-    return response.data;
-  },
-
-  /**
-   * Envoyer une indication de saisie
-   */
-  async sendTypingIndicator(data: TypingIndicatorData): Promise<void> {
-    await apiClient.post('/api/chat/typing-indicator', data);
-  },
-
-  /**
-   * Récupérer les utilisateurs actuellement en train de taper
-   */
-  async getTypingUsers(conversationId: string): Promise<{ users: string[] }> {
-    const response = await apiClient.get(`/api/chat/conversations/${conversationId}/typing-users`);
     return response.data;
   },
 };

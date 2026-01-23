@@ -108,3 +108,52 @@ export interface ResumeAckData {
   resumeFrom?: number;
   reason?: string;
 }
+
+// TEAM TYPES
+export interface Team {
+  id: string;
+  name: string;
+  description?: string;
+  avatar?: string;
+  createdById: string;
+  inviteCode: string;
+  members?: TeamMember[];
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface TeamMember {
+  id: string;
+  teamId: string;
+  userId: string;
+  user?: {
+    id: string;
+    name: string;
+    avatar?: string;
+    email?: string;
+  };
+  role: 'ADMIN' | 'MEMBER' | 'GUEST';
+  joinedAt?: string;
+  status?: 'active' | 'inactive';
+}
+
+// GROUP MESSAGE TYPES
+export interface GroupMessage {
+  id: string;
+  teamId: string;
+  userId: string;
+  message: string;
+  messageType?: 'TEXT' | 'FILE' | 'SYSTEM';
+  fileUrl?: string;
+  fileName?: string;
+  fileSize?: number;
+  isEdited?: boolean;
+  isDeleted?: boolean;
+  createdAt: string;
+  updatedAt?: string;
+  user?: {
+    id: string;
+    name: string;
+    avatar?: string;
+  };
+}

@@ -1,0 +1,28 @@
+
+> frontend@0.1.0 build
+> next build
+
+ ⚠ `images.domains` is deprecated in favor of `images.remotePatterns`. Please update next.config.js to protect your application from malicious users.
+ ⚠ Invalid next.config.js options detected: 
+ ⚠     Unrecognized key(s) in object: 'swcMinify'
+ ⚠ See more info here: https://nextjs.org/docs/messages/invalid-next-config
+   ▲ Next.js 16.0.8 (Turbopack)
+   - Environments: .env.local
+
+ ⚠ The "middleware" file convention is deprecated. Please use "proxy" instead. Learn more: https://nextjs.org/docs/messages/middleware-to-proxy
+   Creating an optimized production build ...
+ ✓ Compiled successfully in 3.8s
+   Running TypeScript ...
+Failed to compile.
+
+./src/shared/hooks/useTeam.ts:96:48
+Type error: Property 'data' does not exist on type '{ team: Team; }'.
+
+[0m [90m 94 |[39m         setError([36mnull[39m)[33m;[39m
+ [90m 95 |[39m         [36mconst[39m response [33m=[39m [36mawait[39m teamService[33m.[39mgetTeam(teamId)[33m;[39m
+[31m[1m>[22m[39m[90m 96 |[39m         [36mconst[39m team [33m=[39m response[33m.[39mteam [33m||[39m response[33m.[39mdata[33m;[39m
+ [90m    |[39m                                                [31m[1m^[22m[39m
+ [90m 97 |[39m         setCurrentTeam(team)[33m;[39m
+ [90m 98 |[39m         [36mreturn[39m team[33m;[39m
+ [90m 99 |[39m       } [36mcatch[39m (err) {[0m
+Next.js build worker exited with code: 1 and signal: null
