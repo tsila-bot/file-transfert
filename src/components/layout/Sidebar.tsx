@@ -14,6 +14,7 @@ import {
   Menu,
   X,
   FileText,
+  Link2,
 } from 'lucide-react';
 import { useAuthStore } from '@/stores/authStore';
 
@@ -22,6 +23,7 @@ const menuItems = [
 
   { icon: Users, label: 'Groupes', href: '/teams' },
   { icon: Share2, label: 'Transferts', href: '/transfert' },
+  { icon: Link2, label: 'Liens Publics', href: '/liens-publics' },
   { icon: FileText, label: 'Contacts', href: '/contacts' },
 ];
 

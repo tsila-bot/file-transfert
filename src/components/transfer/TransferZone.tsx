@@ -1,7 +1,8 @@
 "use client"
 
 import React, { useCallback, useState, useMemo } from 'react'
-import { Eye, EyeOff } from 'lucide-react'
+import { Eye, EyeOff, Link2 } from 'lucide-react'
+import { useRouter } from 'next/navigation'
 import '@/core/P2P/receiveHandler'
 import { getTransferManager } from '@/core/P2P/TransferManager'
 import { useInitializeTransferStore, useTransferStore } from '@/stores/transferStore'
@@ -10,6 +11,7 @@ import ProgressBar from '@/components/transfer/ProgressBar'
 import ChunkVisualization from '@/components/transfer/ChunkVisualization'
 
 export default function TransferZone() {
+	const router = useRouter()
 	useInitializeTransferStore()
 
 	const [, forceRerender] = useState(0)
@@ -40,6 +42,7 @@ export default function TransferZone() {
 	const [passwordInput, setPasswordInput] = useState('')
 	const [showPasswordDialog, setShowPasswordDialog] = useState(false)
 	const [passwordDialogError, setPasswordDialogError] = useState('')
+
 
 	const manager = getTransferManager()
 	const [connectedPeers, setConnectedPeers] = useState(() => manager.getConnectedPeers())
@@ -209,8 +212,23 @@ export default function TransferZone() {
 			>
 				Glisser-déposer un fichier ici ou
 				<div className="mt-2">
-					<input type="file" onChange={onFileInput} />
+					<input 
+						type="file" 
+						onChange={onFileInput}
+						id="fileInput"
+					/>
 				</div>
+			</div>
+
+			{/* Action buttons */}
+			<div className="flex gap-2 mb-4">
+				<button
+					onClick={() => router.push('/liens-publics')}
+					className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors text-sm font-medium flex items-center gap-2"
+				>
+					<Link2 size={16} />
+					Créer un lien public
+				</button>
 			</div>
 
 			<div className="flex gap-3 items-center mb-4">
