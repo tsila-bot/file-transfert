@@ -7,7 +7,7 @@ import { useSocket } from '@/shared/hooks/useSocket';
 import { GroupCallManager } from '@/core/services/webrtc/GroupCallManager';
 import { GroupCallUI } from './GroupCallUI';
 import type { GroupMessage } from '@/types/types';
-import type { SocketEvent } from '@/lib/socket';
+import type { SocketEvent } from '@/lib/socket/SocketClient';
 import type { GroupCallState, PeerConnection } from '@/core/services/webrtc/GroupCallManager';
 import { Send, Phone, Video } from 'lucide-react';
 

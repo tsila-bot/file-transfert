@@ -19,9 +19,8 @@ import { useAuthStore } from '@/stores/authStore';
 
 const menuItems = [
   { icon: LayoutDashboard, label: 'Dashboard', href: '/dashboard' },
-  { icon: MessageCircle, label: 'Chat', href: '/chat' },
-  { icon: Phone, label: 'Appels', href: '/calls' },
-  { icon: Users, label: 'Équipes', href: '/teams' },
+
+  { icon: Users, label: 'Groupes', href: '/teams' },
   { icon: Share2, label: 'Transferts', href: '/transfert' },
   { icon: FileText, label: 'Contacts', href: '/contacts' },
 ];

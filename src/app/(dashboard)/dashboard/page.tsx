@@ -3,14 +3,150 @@
 'use client';
 
 import Link from 'next/link';
+import { useState, useEffect } from 'react';
 import TransferZone from '@/components/transfer/TransferZone';
 import { PeerList } from '@/components/peers/PeerList';
 import { usePeerStore } from '@/stores/peerStore';
+import { useAuthStore } from '@/stores/authStore';
 import { Activity, MessageCircle, Phone, Users, Share2 } from 'lucide-react';
+import { apiClient } from '@/core/services/api/client.service';
+import { getSocketClient } from '@/lib/socket/SocketClient';
+import { useRouter } from 'next/navigation';
 
 export default function DashboardPage() {
   const peerStore = usePeerStore();
+  const authStore = useAuthStore();
+  const router = useRouter();
   const onlinePeers = peerStore.getOnlinePeers();
+  
+  const [stats, setStats] = useState({
+    messages: 0,
+    teams: 0,
+    loading: true
+  });
+
+  // Charger les stats au démarrage
+  useEffect(() => {
+    const fetchStats = async () => {
+      try {
+        const unreadResponse = await apiClient.get('/api/chat/unread-count');
+        const unreadCount = unreadResponse.data?.data?.unreadCount || 0;
+
+        const teamsResponse = await apiClient.get('/api/teams');
+        const teams = teamsResponse.data?.teams || [];
+
+        setStats({
+          messages: unreadCount,
+          teams: teams.length,
+          loading: false
+        });
+      } catch (error) {
+        console.error('Erreur lors du chargement des stats:', error);
+        setStats(prev => ({ ...prev, loading: false }));
+      }
+    };
+
+    if (authStore.user?.id) {
+      fetchStats();
+    }
+  }, [authStore.user?.id]);
+
+  // 🆕 Refetch le compteur quand le dashboard redevient visible
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        console.log('👁️ Dashboard redevient visible - Refetch du compteur...');
+        const fetchUnreadCount = async () => {
+          try {
+            const unreadResponse = await apiClient.get('/api/chat/unread-count');
+            const unreadCount = unreadResponse.data?.data?.unreadCount || 0;
+            setStats(prev => ({
+              ...prev,
+              messages: unreadCount
+            }));
+            console.log('✅ Compteur mis à jour au retour:', unreadCount);
+          } catch (error) {
+            console.error('❌ Erreur lors du refetch:', error);
+          }
+        };
+        fetchUnreadCount();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
+  // Écouter les changements en temps réel du compteur de messages
+  useEffect(() => {
+    let mounted = true;
+
+    const setupSocketListeners = () => {
+      const socketClient = getSocketClient();
+      if (!socketClient) {
+        console.warn('❌ Socket client not available');
+        return null;
+      }
+
+      // ✅ HANDLER 1: Mises à jour directes du compteur
+      const handleUnreadCountUpdated = (data: any) => {
+        if (!mounted) return;
+        console.log('📬 Compteur de messages mise à jour en temps réel:', data.unreadCount);
+        setStats(prev => ({
+          ...prev,
+          messages: data.unreadCount
+        }));
+      };
+
+      // ✅ HANDLER 2: Refetch après marquage comme lus
+      const handleMessagesMarkedAsRead = async () => {
+        if (!mounted) return;
+        try {
+          const unreadResponse = await apiClient.get('/api/chat/unread-count');
+          const unreadCount = unreadResponse.data?.data?.unreadCount || 0;
+          setStats(prev => ({
+            ...prev,
+            messages: unreadCount
+          }));
+        } catch (error) {
+          console.error('❌ Erreur lors du refetch:', error);
+        }
+      };
+
+      // ✅ HANDLER 3: Refetch quand nouveau message reçu
+      const handleNewMessage = async () => {
+        if (!mounted) return;
+        try {
+          const unreadResponse = await apiClient.get('/api/chat/unread-count');
+          const unreadCount = unreadResponse.data?.data?.unreadCount || 0;
+          setStats(prev => ({
+            ...prev,
+            messages: unreadCount
+          }));
+        } catch (error) {
+          console.error('❌ Erreur lors du refetch:', error);
+        }
+      };
+
+      // Enregistrer les listeners
+      socketClient.on('unread_count_updated' as any, handleUnreadCountUpdated);
+      socketClient.on('chat:messages_marked_as_read' as any, handleMessagesMarkedAsRead);
+      socketClient.on('chat_message' as any, handleNewMessage);
+
+      return () => {
+        socketClient.off('unread_count_updated' as any, handleUnreadCountUpdated);
+        socketClient.off('chat:messages_marked_as_read' as any, handleMessagesMarkedAsRead);
+        socketClient.off('chat_message' as any, handleNewMessage);
+      };
+    };
+
+    const cleanup = setupSocketListeners();
+
+    return () => {
+      mounted = false;
+      cleanup?.();
+    };
+  }, []);
 
   return (
     <div className="space-y-6">
@@ -36,7 +172,7 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between">
             <div>
               <p className="text-gray-500 text-sm">Messages</p>
-              <p className="text-3xl font-bold text-gray-900">0</p>
+              <p className="text-3xl font-bold text-gray-900">{stats.loading ? '-' : stats.messages}</p>
             </div>
             <MessageCircle className="text-blue-600" size={32} />
           </div>
@@ -55,8 +191,8 @@ export default function DashboardPage() {
         <div className="bg-white rounded-lg shadow p-6">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-gray-500 text-sm">Équipes</p>
-              <p className="text-3xl font-bold text-gray-900">1</p>
+              <p className="text-gray-500 text-sm">Groupes</p>
+              <p className="text-3xl font-bold text-gray-900">{stats.loading ? '-' : stats.teams}</p>
             </div>
             <Users className="text-indigo-600" size={32} />
           </div>
@@ -96,8 +232,8 @@ export default function DashboardPage() {
 
         <Link href="/teams" className="bg-indigo-50 border border-indigo-200 rounded-lg p-6 hover:bg-indigo-100 transition">
           <Users className="text-indigo-600 mb-3" size={32} />
-          <h3 className="font-semibold text-gray-900 mb-1">Équipes</h3>
-          <p className="text-sm text-gray-600">Gérez vos équipes</p>
+          <h3 className="font-semibold text-gray-900 mb-1">Groupes</h3>
+          <p className="text-sm text-gray-600">Gérez vos groupes</p>
         </Link>
 
         <Link href="/contacts" className="bg-green-50 border border-green-200 rounded-lg p-6 hover:bg-green-100 transition">

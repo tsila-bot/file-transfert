@@ -24,10 +24,10 @@ export default function TeamsPage() {
   const [joinLoading, setJoinLoading] = useState(false);
   const [joinError, setJoinError] = useState<string | null>(null);
 
-  // Charger les équipes au montage
+  // Charger les groupes au montage
   useEffect(() => {
     loadTeams().catch((err) => {
-      console.error('❌ Erreur chargement équipes:', err);
+      console.error('❌ Erreur chargement groupes:', err);
     });
   }, [loadTeams]);
 
@@ -79,8 +79,8 @@ export default function TeamsPage() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Équipes</h1>
-          <p className="text-gray-500 mt-1">Gérez vos équipes et collaborez avec vos collègues</p>
+          <h1 className="text-3xl font-bold text-gray-900">Groupes</h1>
+          <p className="text-gray-500 mt-1">Gérez vos groupes et collaborez avec vos collègues</p>
         </div>
         <div className="flex gap-2">
           <button
@@ -95,7 +95,7 @@ export default function TeamsPage() {
             className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition flex items-center gap-2"
           >
             <Plus size={20} />
-            Créer une équipe
+            Créer un groupe
           </button>
         </div>
       </div>
@@ -105,10 +105,10 @@ export default function TeamsPage() {
         <Search className="absolute left-3 top-3 text-gray-400" size={20} />
         <input
           type="text"
-          placeholder="Chercher une équipe..."
+          placeholder="Chercher un groupe..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+          className="w-full pl-10 pr-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900"
         />
       </div>
 
@@ -139,11 +139,11 @@ export default function TeamsPage() {
             <div className="col-span-full bg-white rounded-lg shadow p-12 text-center">
               <Users className="mx-auto mb-4 text-gray-400" size={48} />
               <h3 className="text-lg font-semibold text-gray-900 mb-2">
-                {(teams || []).length === 0 ? 'Aucune équipe' : 'Aucune équipe trouvée'}
+                {(teams || []).length === 0 ? 'Aucun groupe' : 'Aucun groupe trouvé'}
               </h3>
               <p className="text-gray-500">
                 {(teams || []).length === 0
-                  ? 'Créez une nouvelle équipe ou rejoignez une équipe existante'
+                  ? 'Créez un nouveau groupe ou rejoignez un groupe existant'
                   : 'Essayez une autre recherche'}
               </p>
             </div>
@@ -163,7 +163,7 @@ export default function TeamsPage() {
       {/* Create Team Modal */}
       <TeamModal
         isOpen={showCreateModal}
-        title="Créer une équipe"
+        title="Créer un groupe"
         isLoading={loading}
         onClose={() => setShowCreateModal(false)}
         onSubmit={handleCreateTeam}
@@ -173,7 +173,7 @@ export default function TeamsPage() {
       {showJoinModal && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-lg shadow-lg max-w-md w-full p-6">
-            <h2 className="text-2xl font-bold text-gray-900 mb-6">Rejoindre une équipe</h2>
+            <h2 className="text-2xl font-bold text-gray-900 mb-6">Rejoindre un groupe</h2>
 
             {joinError && (
               <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">

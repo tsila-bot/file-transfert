@@ -15,10 +15,6 @@ import {
   saveTransferState,
   getTransferState,
   deleteTransferState,
-  saveResumeTransferState,
-  getMissingChunks,
-  markTransferAsResuming,
-  listIncompleteTransfers,
 } from '@/core/storage/indexeddb';
 import { ConnectionState } from '@/types/types';
 
@@ -49,24 +45,8 @@ export class TransferEngine {
   private readonly CHUNK_SEND_INTERVAL = 0;
   private readonly MAX_CONCURRENT_TRANSFERS = 3;
 
-  // Propriétés pour la reprise
-  private heartbeatInterval: NodeJS.Timeout | null = null;
-  private lastHeartbeat: number = Date.now();
-  private autoSaveCounter: number = 0;
-  private isConnectionHealthy: boolean = true;
-
-  // Configuration de la reprise
-  private readonly HEARTBEAT_INTERVAL = 30000; // Increased from 5000 to 30000 (30 seconds)
-  private readonly HEARTBEAT_TIMEOUT = 60000; // Increased from 15000 to 60000 (60 seconds)
-  private readonly AUTO_SAVE_EVERY = 10;
-  private readonly MAX_RESUME_ATTEMPTS = 3;
-
-  // État des transferts en cours de reprise
+  // État des transferts
   private chunkProducersFinished: Set<string> = new Set();
-  private resumingTransfers: Set<string> = new Set();
-  private lastSyncTime: Map<string, number> = new Map(); // Track last sync time per transfer
-  private lastSyncProgress: Map<string, number> = new Map(); // Track last sync progress per transfer
-  private readonly SYNC_THROTTLE_MS = 10000; // Minimum 10 seconds between sync messages per transfer
 
   private startTime: number = 0;
   private bytesTransferred: number = 0;
@@ -75,22 +55,10 @@ export class TransferEngine {
   constructor(connection: PeerConnection) {
     this.connection = connection;
     this.setupHandlers();
-    this.startHeartbeatMonitoring();
     this.setupConnectionMonitoring();
   }
 
-  /**
-   * Démarrer la surveillance du heartbeat
-   */
-  private startHeartbeatMonitoring(): void {
-    this.heartbeatInterval = setInterval(() => {
-      this.sendHeartbeat();
-    }, this.HEARTBEAT_INTERVAL);
 
-    setInterval(() => {
-      this.checkHeartbeatTimeout();
-    }, 1000);
-  }
 
   /**
    * Démarrer le producteur de chunks en streaming
@@ -143,485 +111,7 @@ export class TransferEngine {
    * Configurer la surveillance de la connexion
    */
   private setupConnectionMonitoring(): void {
-    this.connection.on('statechange', (state: ConnectionState) => {
-      if (state === 'connected') {
-        this.handleConnectionRestored();
-      } else if (state === 'disconnected' || state === 'failed') {
-        this.handleConnectionLoss();
-      }
-    });
-
-    window.addEventListener('beforeunload', () => {
-      this.handlePageUnload();
-    });
-
-    document.addEventListener('visibilitychange', this.handleVisibilityChange);
-  }
-
-  /**
-   * Envoyer un heartbeat au pair
-   */
-  private sendHeartbeat(): void {
-    if (!this.connection.isConnected()) return;
-
-    this.connection.sendMessage({
-      type: 'heartbeat',
-      data: {
-        timestamp: Date.now(),
-        transferIds: Array.from(this.transfers.keys()).filter((id) =>
-          ['active', 'pending'].includes(this.transfers.get(id)?.status || '')
-        ),
-      },
-    });
-
-    this.lastHeartbeat = Date.now();
-  }
-
-  /**
-   * Vérifier si le heartbeat a timeout
-   */
-  private checkHeartbeatTimeout(): void {
-    const timeSinceLastHeartbeat = Date.now() - this.lastHeartbeat;
-
-    if (timeSinceLastHeartbeat > this.HEARTBEAT_TIMEOUT && this.isConnectionHealthy) {
-      console.warn('⚠️ Heartbeat timeout detected, connection may be lost');
-      this.isConnectionHealthy = false;
-      this.handleConnectionLoss();
-    }
-  }
-
-  /**
-   * Gérer la réception d'un heartbeat
-   */
-  private handleHeartbeat(data: any): void {
-    this.lastHeartbeat = Date.now();
-
-    if (!this.isConnectionHealthy) {
-      this.isConnectionHealthy = true;
-      console.log('✅ Connection restored');
-    }
-
-    this.connection.sendMessage({
-      type: 'heartbeat_ack',
-      data: {
-        timestamp: data.timestamp,
-        received: true,
-      },
-    });
-
-    if (data.transferIds && Array.isArray(data.transferIds)) {
-      this.syncTransferStates(data.transferIds);
-    }
-  }
-
-  /**
-   * Synchroniser les états des transferts avec le pair
-   */
-  private async syncTransferStates(peerTransferIds: string[]): Promise<void> {
-    const now = Date.now();
-    
-    for (const transferId of peerTransferIds) {
-      const lastSync = this.lastSyncTime.get(transferId) || 0;
-      
-      // Throttle sync messages to prevent flooding
-      if (now - lastSync < this.SYNC_THROTTLE_MS) {
-        continue;
-      }
-      
-      const ourState = await getTransferState(transferId);
-      if (ourState && ourState.transfer.status === 'active') {
-        const lastProgress = this.lastSyncProgress.get(transferId) || 0;
-        const currentProgress = ourState.transfer.progress.percentage;
-        
-        // Only send sync if progress has changed significantly (at least 1%)
-        if (Math.abs(currentProgress - lastProgress) < 1) {
-          continue;
-        }
-        
-        this.connection.sendMessage({
-          type: 'transfer_sync',
-          data: {
-            transferId,
-            receivedChunks: ourState.receivedChunks,
-            progress: currentProgress,
-          },
-        });
-        
-        this.lastSyncTime.set(transferId, now);
-        this.lastSyncProgress.set(transferId, currentProgress);
-      }
-    }
-  }
-
-  /**
-   * Gérer la perte de connexion
-   */
-  private async handleConnectionLoss(): Promise<void> {
-    console.warn('🔌 Connection loss detected, saving transfer states...');
-
-    await this.saveAllActiveTransfers();
-
-    window.dispatchEvent(new CustomEvent('connection:lost'));
-
-    for (const [transferId, transfer] of this.transfers) {
-      if (transfer.status === 'active') {
-        transfer.status = 'paused';
-        this.emitTransferUpdate(transfer);
-      }
-    }
-  }
-
-  /**
-   * Gérer la restauration de la connexion
-   */
-  private async handleConnectionRestored(): Promise<void> {
-    console.log('🔄 Connection restored, checking for incomplete transfers...');
-
-    const peerId = this.connection['peerId'];
-    const incompleteTransfers = await this.getIncompleteTransfersForPeer(peerId);
-
-    if (incompleteTransfers.length > 0) {
-      console.log(`📋 Found ${incompleteTransfers.length} incomplete transfers for ${peerId}`);
-
-      window.dispatchEvent(
-        new CustomEvent('transfers:resume:available', {
-          detail: {
-            peerId,
-            peerName: this.connection['peerName'],
-            transfers: incompleteTransfers,
-          },
-        })
-      );
-    }
-  }
-
-  /**
-   * Gérer la fermeture de la page
-   */
-  private async handlePageUnload(): Promise<void> {
-    for (const [transferId, transfer] of this.transfers) {
-      if (transfer.status === 'active') {
-        await this.saveTransferProgress(transferId);
-      }
-    }
-
-    console.log('💾 Transfer states saved before page unload');
-  }
-
-  /**
-   * Gérer le changement de visibilité
-   */
-  private handleVisibilityChange = (): void => {
-    if (document.hidden) {
-      console.log('📱 App going to background, saving states...');
-      this.saveAllActiveTransfers().catch(console.error);
-    }
-  };
-
-  /**
-   * Sauvegarder tous les transferts actifs
-   */
-  private async saveAllActiveTransfers(): Promise<void> {
-    const savePromises: Promise<void>[] = [];
-
-    for (const [transferId, transfer] of this.transfers) {
-      if (transfer.status === 'active') {
-        savePromises.push(this.saveTransferProgress(transferId));
-      }
-    }
-
-    await Promise.allSettled(savePromises);
-    console.log(`💾 Saved ${savePromises.length} active transfers`);
-  }
-
-  /**
-   * Sauvegarder la progression d'un transfert spécifique
-   */
-  private async saveTransferProgress(fileId: string): Promise<void> {
-    const transfer = this.transfers.get(fileId);
-    const chunkManager = this.chunkManagers.get(fileId);
-
-    if (!transfer || !chunkManager) return;
-
-    try {
-      const receivedChunks: number[] = [];
-      const bitmap = chunkManager['bitmap'] || [];
-
-      for (let i = 0; i < bitmap.length; i++) {
-        if (bitmap[i]) {
-          receivedChunks.push(i);
-        }
-      }
-
-      const metadata = {
-        ...transfer,
-        savedAt: Date.now(),
-        connectionInfo: {
-          peerId: this.connection['peerId'],
-          peerName: this.connection['peerName'],
-        },
-        chunkManagerState: {
-          totalChunks: bitmap.length,
-          receivedCount: receivedChunks.length,
-        },
-      };
-
-      await saveResumeTransferState(fileId, {
-        transfer,
-        receivedChunks,
-        lastUpdated: Date.now(),
-        connectionInfo: {
-          peerId: this.connection['peerId'],
-          peerName: this.connection['peerName'],
-        },
-        metadata,
-      });
-
-      console.log(`💾 Progress saved for ${fileId}: ${receivedChunks.length}/${bitmap.length} chunks`);
-    } catch (error) {
-      console.error(`Failed to save progress for ${fileId}:`, error);
-    }
-  }
-
-  /**
-   * Incrémenter le compteur de sauvegarde automatique
-   */
-  private incrementAutoSave(fileId: string): void {
-    this.autoSaveCounter++;
-
-    if (this.autoSaveCounter >= this.AUTO_SAVE_EVERY) {
-      this.autoSaveCounter = 0;
-      this.saveTransferProgress(fileId).catch(console.error);
-    }
-  }
-
-  /**
-   * Obtenir les transferts incomplets pour un pair spécifique
-   */
-  private async getIncompleteTransfersForPeer(peerId: string): Promise<any[]> {
-    const incompleteStates = await listIncompleteTransfers();
-
-    return incompleteStates
-      .filter((state) => state.transfer.peerId === peerId)
-      .map((state) => ({
-        id: state.transfer.id,
-        fileName: state.transfer.fileName,
-        fileSize: state.transfer.fileSize,
-        progress: {
-          received: state.receivedChunks.length,
-          total: state.transfer.progress.chunksTotal || 0,
-          percentage: state.transfer.progress.percentage,
-        },
-        lastUpdated: state.lastUpdated,
-      }));
-  }
-
-  /**
-   * Reprendre un transfert depuis un état sauvegardé
-   */
-  async resumeTransfer(fileId: string): Promise<boolean> {
-    try {
-      console.log(`🔄 Attempting to resume transfer: ${fileId}`);
-
-      if (this.transfers.has(fileId) || this.resumingTransfers.has(fileId)) {
-        console.warn(`Transfer ${fileId} is already active or resuming`);
-        return false;
-      }
-
-      this.resumingTransfers.add(fileId);
-      await markTransferAsResuming(fileId);
-
-      const savedState = await getTransferState(fileId);
-      if (!savedState) {
-        throw new Error(`No saved state found for transfer: ${fileId}`);
-      }
-
-      const { transfer, receivedChunks } = savedState;
-
-      if (transfer.peerId !== this.connection['peerId']) {
-        throw new Error(
-          `Peer mismatch: saved peer ${transfer.peerId}, current peer ${this.connection['peerId']}`
-        );
-      }
-
-      const chunkManager = new ChunkManager();
-
-      const metadata = chunkManager['metadata'];
-      if (metadata) {
-        chunkManager.setMetadata(metadata);
-      }
-
-      const bitmap = chunkManager['bitmap'] || [];
-      for (const chunkIndex of receivedChunks) {
-        if (chunkIndex < bitmap.length) {
-          bitmap[chunkIndex] = true;
-        }
-      }
-
-      this.chunkManagers.set(fileId, chunkManager);
-
-      const resumedTransfer: Transfer = {
-        ...transfer,
-        status: 'active' as const,
-      };
-
-      // Incrémenter le compteur de reprise dans les métadonnées
-
-      if (!resumedTransfer.resumeMetadata) {
-        resumedTransfer.resumeMetadata = {};
-      }
-      resumedTransfer.resumeMetadata.resumedAt = new Date();
-      resumedTransfer.resumeMetadata.resumeCount = (transfer.resumeMetadata?.resumeCount || 0) + 1;
-
-      this.transfers.set(fileId, resumedTransfer);
-
-      if (transfer.direction === 'send') {
-        await this.resumeSending(fileId, receivedChunks);
-      }
-
-      if (transfer.direction === 'receive') {
-        await this.requestMissingChunks(fileId, receivedChunks);
-      }
-
-      window.dispatchEvent(
-        new CustomEvent('transfer:resumed', {
-          detail: { fileId, transfer: resumedTransfer },
-        })
-      );
-
-      console.log(`✅ Transfer resumed: ${fileId}`);
-      return true;
-    } catch (error) {
-      console.error(`Failed to resume transfer ${fileId}:`, error);
-      this.resumingTransfers.delete(fileId);
-      return false;
-    }
-  }
-
-  /**
-   * Reprendre l'envoi depuis un point donné
-   */
-  private async resumeSending(fileId: string, alreadySentChunks: number[]): Promise<void> {
-    const queue = this.sendQueues.get(fileId);
-    if (!queue) return;
-
-    const chunksToSend = queue.filter(
-      (chunk) => !alreadySentChunks.includes(chunk.chunk.index)
-    );
-
-    this.sendQueues.set(fileId, chunksToSend);
-    this.pendingAcks.set(fileId, new Set());
-    this.chunksInFlight.set(fileId, new Set());
-
-    this.startSending(fileId);
-  }
-
-  /**
-   * Demander les chunks manquants au pair
-   */
-  private async requestMissingChunks(
-    fileId: string,
-    receivedChunks: number[]
-  ): Promise<void> {
-    const transfer = this.transfers.get(fileId);
-    if (!transfer) return;
-
-    const totalChunks = transfer.progress.chunksTotal || 0;
-    const missingChunks: number[] = [];
-
-    for (let i = 0; i < totalChunks; i++) {
-      if (!receivedChunks.includes(i)) {
-        missingChunks.push(i);
-      }
-    }
-
-    if (missingChunks.length === 0) {
-      console.log(`✅ All chunks already received for ${fileId}`);
-      return;
-    }
-
-    console.log(`📋 Requesting ${missingChunks.length} missing chunks for ${fileId}`);
-
-    this.connection.sendMessage({
-      type: 'resume_request',
-      data: {
-        fileId,
-        missingChunks,
-        receivedChunks,
-      },
-    });
-  }
-
-  /**
-   * Gérer une demande de reprise
-   */
-  private async handleResumeRequest(data: any): Promise<void> {
-    const { fileId, missingChunks, receivedChunks } = data;
-
-    console.log(`📥 Resume request for ${fileId}, missing ${missingChunks.length} chunks`);
-
-    const transfer = this.transfers.get(fileId);
-    const chunkManager = this.chunkManagers.get(fileId);
-
-    if (!transfer || !chunkManager) {
-      console.warn(`Cannot resume ${fileId}: transfer not found`);
-      return;
-    }
-
-    const bitmap = chunkManager['bitmap'] || [];
-    for (let i = 0; i < bitmap.length; i++) {
-      bitmap[i] = receivedChunks.includes(i);
-    }
-
-    if (transfer.direction === 'send') {
-      await this.resumeSending(fileId, receivedChunks);
-    }
-
-    this.connection.sendMessage({
-      type: 'resume_ack',
-      data: { fileId, accepted: true },
-    });
-  }
-
-  /**
-   * Gérer la synchronisation des transferts
-   */
-  private handleTransferSync(data: any): void {
-    const { transferId, receivedChunks, progress } = data;
-
-    console.log(`🔄 Transfer sync received for ${transferId}: ${progress}% complete`);
-
-    const chunkManager = this.chunkManagers.get(transferId);
-    if (chunkManager && Array.isArray(receivedChunks)) {
-      const bitmap = chunkManager['bitmap'] || [];
-      receivedChunks.forEach((chunkIndex: number) => {
-        if (chunkIndex < bitmap.length) {
-          bitmap[chunkIndex] = true;
-        }
-      });
-    }
-  }
-
-  /**
-   * Gérer l'ack de reprise
-   */
-  private handleResumeAck(data: any): void {
-    const { fileId, accepted } = data;
-
-    if (accepted) {
-      console.log(`✅ Resume accepted for ${fileId}`);
-      this.resumingTransfers.delete(fileId);
-    } else {
-      console.warn(`❌ Resume rejected for ${fileId}`);
-      this.resumingTransfers.delete(fileId);
-
-      const transfer = this.transfers.get(fileId);
-      if (transfer) {
-        transfer.status = 'failed';
-        transfer.error = 'Resume rejected by peer';
-        this.emitTransferUpdate(transfer);
-      }
-    }
+    // Connexion monitoring removed - no auto-save functionality
   }
 
   /**
@@ -846,26 +336,6 @@ export class TransferEngine {
       this.handleBinaryData(data);
     });
 
-    this.connection.on('heartbeat', (data: any) => {
-      this.handleHeartbeat(data);
-    });
-
-    this.connection.on('heartbeat_ack', (data: any) => {
-      this.lastHeartbeat = Date.now();
-    });
-
-    this.connection.on('transfer_sync', (data: any) => {
-      this.handleTransferSync(data);
-    });
-
-    this.connection.on('resume_request', (data: any) => {
-      this.handleResumeRequest(data);
-    });
-
-    this.connection.on('resume_ack', (data: any) => {
-      this.handleResumeAck(data);
-    });
-
     // Resume sending when peer signals bufferedamountlow (backpressure relieved)
     this.connection.on('bufferedamountlow', () => {
       try {
@@ -1041,7 +511,6 @@ export class TransferEngine {
         data: { fileId, index, received: true, hash },
       });
 
-      this.incrementAutoSave(fileId);
       this.updateProgress(fileId);
 
       if (chunkManager.isComplete()) {
@@ -1049,7 +518,6 @@ export class TransferEngine {
       }
     } catch (error) {
       console.error(`Failed to receive chunk ${index}:`, error);
-      this.saveTransferProgress(fileId).catch(console.error);
 
       this.connection.sendMessage({
         type: 'ack',
@@ -1087,7 +555,6 @@ export class TransferEngine {
         }
       }
 
-      this.incrementAutoSave(fileId);
       this.updateSendProgress(fileId, index);
       this.sendNextChunks(fileId);
     } else {
@@ -1464,9 +931,6 @@ export class TransferEngine {
     this.transfers.delete(fileId);
     this.decryptionKeys.delete(fileId);
     this.chunkProducersFinished.delete(fileId);
-    this.lastSyncTime.delete(fileId);
-    this.lastSyncProgress.delete(fileId);
-    this.resumingTransfers.delete(fileId);
     this.clearRetryInterval(fileId);
   }
 
@@ -1474,17 +938,7 @@ export class TransferEngine {
    * Détruire l'engine
    */
   destroy(): void {
-    console.log('🔥 Destroying TransferEngine with resume support');
-
-    this.saveAllActiveTransfers().catch(console.error);
-
-    if (this.heartbeatInterval) {
-      clearInterval(this.heartbeatInterval);
-      this.heartbeatInterval = null;
-    }
-
-    window.removeEventListener('beforeunload', this.handlePageUnload);
-    document.removeEventListener('visibilitychange', this.handleVisibilityChange);
+    console.log('🔥 Destroying TransferEngine');
 
     for (const [fileId, transfer] of this.transfers) {
       if (transfer.status === 'active' || transfer.status === 'pending') {
@@ -1502,7 +956,6 @@ export class TransferEngine {
     this.activeSends.clear();
     this.decryptionKeys.clear();
     this.chunkProducersFinished.clear();
-    this.resumingTransfers.clear();
 
     for (const [fileId, _] of this.retryIntervals) {
       this.clearRetryInterval(fileId);

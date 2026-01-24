@@ -51,7 +51,6 @@ const eventListeners: {
   transferUpdate?: (event: Event) => void;
   transferOffer?: (event: Event) => void;
   transferComplete?: (event: Event) => void;
-  transferResumed?: (event: Event) => void;
 } = {};
 
 export const useTransferStore = create<TransferState>()(
@@ -102,18 +101,10 @@ export const useTransferStore = create<TransferState>()(
           }
         };
 
-        // ✅ Écouter les reprises de transfert
-        eventListeners.transferResumed = (event: Event) => {
-          const data = (event as CustomEvent).detail;
-          console.log(`[TransferStore] 🔄 Transfer resumed: ${data.fileId}`);
-          get().updateTransfer(data.transfer);
-        };
-
         // Attacher les listeners
         window.addEventListener('transfer:update', eventListeners.transferUpdate);
         window.addEventListener('transfer:offer', eventListeners.transferOffer);
         window.addEventListener('transfer:complete', eventListeners.transferComplete);
-        window.addEventListener('transfer:resumed', eventListeners.transferResumed);
 
         set({ listenersInitialized: true });
         console.log('[TransferStore] ✅ Listeners initialized');
@@ -133,9 +124,6 @@ export const useTransferStore = create<TransferState>()(
         }
         if (eventListeners.transferComplete) {
           window.removeEventListener('transfer:complete', eventListeners.transferComplete);
-        }
-        if (eventListeners.transferResumed) {
-          window.removeEventListener('transfer:resumed', eventListeners.transferResumed);
         }
 
         set({ listenersInitialized: false });

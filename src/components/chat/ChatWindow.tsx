@@ -6,7 +6,7 @@ import { useAuthStore } from '@/stores/authStore';
 import { MessageList } from './MessageList';
 import { MessageInput } from './MessageInput';
 import { ConversationList } from './ConversationList';
-import { Phone, Video, Info, Plus, X } from 'lucide-react';
+import { Info, Plus, X } from 'lucide-react';
 
 interface Message {
   id: string;
@@ -45,6 +45,15 @@ export default function ChatWindow() {
   const [showNewConversation, setShowNewConversation] = useState(false);
   const [onlineUsers, setOnlineUsers] = useState<OnlineUser[]>([]);
   const [loadingUsers, setLoadingUsers] = useState(false);
+
+  // Calculer les statistiques des messages
+  const messageStats = {
+    total: messages.length,
+    sent: messages.filter(m => m.senderId === authStore.user?.id).length,
+    received: messages.filter(m => m.senderId !== authStore.user?.id).length,
+    read: messages.filter(m => m.isRead && m.senderId !== authStore.user?.id).length,
+    unread: messages.filter(m => !m.isRead && m.senderId !== authStore.user?.id).length,
+  };
 
   // Charger conversations initiales
   useEffect(() => {
@@ -116,24 +125,64 @@ export default function ChatWindow() {
     }
   }, [selectedConversation, socket]);
 
+  // Écouter les messages chargés de l'historique
+  useEffect(() => {
+    const cleanup = socket.on('chat:messages_loaded', (data: any) => {
+      console.log('📨 Messages loaded:', data);
+      if (data.conversationId === selectedConversation && Array.isArray(data.messages)) {
+        setMessages(data.messages.map((msg: any) => {
+          // Le backend retourne: id, senderId, receiverId, message, createdAt, isRead
+          const timestamp = msg.createdAt || msg.timestamp;
+          return {
+            id: msg.id || `msg-${Date.now()}`,
+            senderId: msg.senderId,
+            senderName: msg.senderName || 'Unknown',
+            content: msg.content || msg.message || '',
+            timestamp: timestamp ? new Date(timestamp) : new Date(),
+            isRead: msg.isRead === true, // Utiliser la vraie valeur isRead du backend
+          };
+        }));
+      }
+    });
+
+    return cleanup;
+  }, [selectedConversation, socket, authStore.user?.id]);
+
+  // Écouter l'événement de messages marqués comme lus (pour mettre à jour le dashboard)
+  useEffect(() => {
+    const cleanup = socket.on('chat:messages_marked_as_read', (data: any) => {
+      console.log('✅ Messages marked as read:', data);
+      // Les messages ont été marqués comme lus - le compteur du dashboard va être actualisé
+      // lors du prochain refresh de la page ou via une requête API
+    });
+
+    return cleanup;
+  }, [socket]);
+
   // Écouter les nouveaux messages
   useEffect(() => {
     const cleanup = socket.on('chat_message', (data: any) => {
       if (data.conversationId === selectedConversation) {
+        // Message de la conversation sélectionnée - ajouter à la liste
         setMessages((prev) => [...prev, {
           id: data.id || `msg-${Date.now()}`,
           senderId: data.senderId,
           senderName: data.senderName,
           content: data.content,
           timestamp: new Date(data.timestamp),
-          isRead: data.senderId === authStore.user?.id,
+          isRead: data.senderId === authStore.user?.id ? true : (data.isRead === true),
         }]);
       } else {
-        // Mettre à jour le compteur non lu
+        // Message d'une autre conversation - mettre à jour le compteur et l'aperçu
         setConversations((prev) =>
           prev.map((conv) =>
             conv.id === data.conversationId
-              ? { ...conv, unreadCount: conv.unreadCount + 1 }
+              ? { 
+                  ...conv, 
+                  unreadCount: conv.unreadCount + 1,
+                  lastMessage: data.content,
+                  lastMessageTime: new Date(data.timestamp)
+                }
               : conv
           )
         );
@@ -171,6 +220,21 @@ export default function ChatWindow() {
     setSelectedConversation(conversationId);
     setMessages([]);
     setSearchQuery('');
+
+    // ✅ NOUVEAU: Réduire le compteur de messages non lus à 0 pour cette conversation
+    setConversations((prev) =>
+      prev.map((conv) =>
+        conv.id === conversationId
+          ? { ...conv, unreadCount: 0 }
+          : conv
+      )
+    );
+
+    // ✅ NOUVEAU: Notifier le backend que les messages ont été vus
+    // Cela permettra au dashboard de recevoir la mise à jour en temps réel
+    socket.emit('chat:mark_conversation_read', {
+      conversationId: conversationId,
+    });
   };
 
   // Démarrer une nouvelle conversation
@@ -220,7 +284,7 @@ export default function ChatWindow() {
             placeholder="Rechercher..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            className="w-full px-3 py-2 border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-900"
           />
         </div>
         <ConversationList
@@ -234,23 +298,41 @@ export default function ChatWindow() {
       {selectedConversation ? (
         <div className="flex-1 bg-white rounded-lg shadow flex flex-col">
           {/* Header */}
-          <div className="p-4 border-b flex items-center justify-between">
-            <div>
-              <h3 className="font-bold text-gray-900">
-                {conversations.find(c => c.id === selectedConversation)?.userName}
-              </h3>
-              <p className="text-sm text-gray-500">En ligne</p>
+          <div className="p-4 border-b">
+            <div className="flex items-center justify-between mb-3">
+              <div>
+                <h3 className="font-bold text-gray-900">
+                  {conversations.find(c => c.id === selectedConversation)?.userName}
+                </h3>
+                <p className="text-sm text-gray-500">En ligne</p>
+              </div>
+              <div className="flex gap-2">
+                <button className="p-2 hover:bg-gray-100 rounded-lg transition">
+                  <Info className="w-5 h-5 text-gray-600" />
+                </button>
+              </div>
             </div>
-            <div className="flex gap-2">
-              <button className="p-2 hover:bg-gray-100 rounded-lg transition">
-                <Phone className="w-5 h-5 text-gray-600" />
-              </button>
-              <button className="p-2 hover:bg-gray-100 rounded-lg transition">
-                <Video className="w-5 h-5 text-gray-600" />
-              </button>
-              <button className="p-2 hover:bg-gray-100 rounded-lg transition">
-                <Info className="w-5 h-5 text-gray-600" />
-              </button>
+
+            {/* Message Statistics */}
+            <div className="bg-indigo-50 rounded-lg p-3 mt-3">
+              <div className="grid grid-cols-4 gap-2 text-center">
+                <div>
+                  <p className="text-xs text-gray-600">Total</p>
+                  <p className="text-lg font-bold text-indigo-600">{messageStats.total}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-600">Envoyés</p>
+                  <p className="text-lg font-bold text-green-600">{messageStats.sent}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-600">Reçus</p>
+                  <p className="text-lg font-bold text-blue-600">{messageStats.received}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-600">Non lus</p>
+                  <p className="text-lg font-bold text-orange-600">{messageStats.unread}</p>
+                </div>
+              </div>
             </div>
           </div>
 

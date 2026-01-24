@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { Send, Paperclip, Smile } from 'lucide-react';
+import { Send, Smile } from 'lucide-react';
 
 interface MessageInputProps {
   onSendMessage: (message: string, attachments?: File[]) => void;
@@ -9,19 +9,20 @@ interface MessageInputProps {
   placeholder?: string;
 }
 
+const EMOJIS = ['😀', '😂', '😍', '😘', '😜', '😎', '😴', '😡', '😢', '😱', '🔥', '💯', '👍', '👏', '🙏', '❤️', '💔', '✨', '🎉', '🎊'];
+
 export function MessageInput({
   onSendMessage,
   disabled = false,
   placeholder = 'Tapez un message...',
 }: MessageInputProps) {
   const [message, setMessage] = useState('');
-  const [attachments, setAttachments] = useState<File[]>([]);
+  const [showEmojis, setShowEmojis] = useState(false);
 
   const handleSend = () => {
     if (!message.trim()) return;
-    onSendMessage(message, attachments.length > 0 ? attachments : undefined);
+    onSendMessage(message);
     setMessage('');
-    setAttachments([]);
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -31,31 +32,15 @@ export function MessageInput({
     }
   };
 
+  const handleEmojiClick = (emoji: string) => {
+    setMessage(message + emoji);
+    setShowEmojis(false);
+  };
+
   return (
     <div className="border-t border-gray-200 p-4 space-y-2">
-      {/* Attachments Preview */}
-      {attachments.length > 0 && (
-        <div className="flex gap-2 flex-wrap">
-          {attachments.map((file, idx) => (
-            <div key={idx} className="bg-gray-100 px-3 py-1 rounded-lg text-sm flex items-center gap-2">
-              <span className="truncate max-w-xs">{file.name}</span>
-              <button
-                onClick={() => setAttachments(attachments.filter((_, i) => i !== idx))}
-                className="text-gray-500 hover:text-gray-700"
-              >
-                ✕
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
-
       {/* Input */}
-      <div className="flex gap-2">
-        <button className="p-2 hover:bg-gray-100 rounded-lg transition text-gray-600">
-          <Paperclip size={18} />
-        </button>
-
+      <div className="flex gap-2 relative">
         <textarea
           value={message}
           onChange={(e) => setMessage(e.target.value)}
@@ -63,10 +48,13 @@ export function MessageInput({
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100 resize-none"
+          className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-100 resize-none text-gray-900 placeholder-gray-400"
         />
 
-        <button className="p-2 hover:bg-gray-100 rounded-lg transition text-gray-600">
+        <button
+          onClick={() => setShowEmojis(!showEmojis)}
+          className="p-2 hover:bg-gray-100 rounded-lg transition text-gray-600"
+        >
           <Smile size={18} />
         </button>
 
@@ -77,6 +65,21 @@ export function MessageInput({
         >
           <Send size={18} />
         </button>
+
+        {/* Emoji Picker */}
+        {showEmojis && (
+          <div className="absolute bottom-12 right-0 bg-white border border-gray-300 rounded-lg shadow-lg p-3 grid grid-cols-5 gap-2 w-64 z-50">
+            {EMOJIS.map((emoji) => (
+              <button
+                key={emoji}
+                onClick={() => handleEmojiClick(emoji)}
+                className="text-xl p-2 hover:bg-gray-100 rounded transition"
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

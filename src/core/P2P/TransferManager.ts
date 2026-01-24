@@ -215,19 +215,6 @@ export class TransferManager extends EventEmitter {
   }
 
   /**
-   * Reprendre un transfert
-   */
-  resumeTransfer(fileId: string, peerId: string): void {
-    const engine = this.transferEngines.get(peerId);
-
-    if (!engine) {
-      throw new Error(`No TransferEngine found for peer: ${peerId}`);
-    }
-
-    engine.resumeTransfer(fileId);
-  }
-
-  /**
    * Annuler un transfert
    */
   cancelTransfer(fileId: string, peerId: string): void {

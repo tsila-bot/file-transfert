@@ -1205,5 +1205,65 @@ export const clearAll = () => indexedDBStorage.clearAll();
 
 export const healthCheck = () => indexedDBStorage.healthCheck();
 
+/**
+ * Lister tous les transferts incomplets pour un peer
+ */
+export async function listIncompleteTransfersForPeer(
+  peerId: string
+): Promise<TransferState[]> {
+  const db = await indexedDBStorage.initDB();
+  
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([STORE_NAME], 'readonly');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.getAll();
+
+    request.onsuccess = () => {
+      const allStates: TransferState[] = request.result;
+      const incomplete = allStates.filter(state => 
+        state.transfer?.peerId === peerId && 
+        state.transfer?.status !== 'completed' &&
+        state.transfer?.status !== 'failed'
+      );
+      
+      console.log(`📋 Found ${incomplete.length} incomplete transfers for ${peerId}`);
+      resolve(incomplete);
+    };
+
+    request.onerror = () => reject(request.error);
+  });
+}
+
+/**
+ * Nettoyer les transferts plus vieux que X jours
+ */
+export async function cleanupOldTransfersCustom(daysOld: number = 7): Promise<number> {
+  const db = await indexedDBStorage.initDB();
+  const cutoffTime = Date.now() - (daysOld * 24 * 60 * 60 * 1000);
+  
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([STORE_NAME], 'readwrite');
+    const store = transaction.objectStore(STORE_NAME);
+    const request = store.getAll();
+
+    request.onsuccess = () => {
+      const allStates: TransferState[] = request.result;
+      let deletedCount = 0;
+
+      for (const state of allStates) {
+        if (state.lastUpdated < cutoffTime) {
+          store.delete(state.transfer.id);
+          deletedCount++;
+        }
+      }
+
+      console.log(`🧹 Cleaned up ${deletedCount} old transfers`);
+      resolve(deletedCount);
+    };
+
+    request.onerror = () => reject(request.error);
+  });
+}
+
 // Export de l'instance pour les fonctions avancées
 export default indexedDBStorage;

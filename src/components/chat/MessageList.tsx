@@ -45,16 +45,52 @@ export function MessageList({ messages, currentUserId, isLoading = false }: Mess
   return (
     <div className="flex-1 overflow-y-auto p-4 space-y-4">
       {messages.map((msg, idx) => {
+        // Sécuriser le timestamp
+        let msgDate: Date | null = null;
+        try {
+          if (msg.timestamp) {
+            if (typeof msg.timestamp === 'string') {
+              msgDate = new Date(msg.timestamp);
+            } else if (msg.timestamp instanceof Date) {
+              msgDate = msg.timestamp;
+            }
+            // Vérifier que la date est valide
+            if (msgDate && isNaN(msgDate.getTime())) {
+              msgDate = null;
+            }
+          }
+        } catch (e) {
+          msgDate = null;
+        }
+
         const isCurrentUser = msg.senderId === currentUserId;
+        let prevDate: Date | null = null;
+        
+        if (idx > 0 && messages[idx - 1].timestamp) {
+          try {
+            const prevTimestamp = messages[idx - 1].timestamp;
+            if (typeof prevTimestamp === 'string') {
+              prevDate = new Date(prevTimestamp);
+            } else if (prevTimestamp instanceof Date) {
+              prevDate = prevTimestamp;
+            }
+            if (prevDate && isNaN(prevDate.getTime())) {
+              prevDate = null;
+            }
+          } catch (e) {
+            prevDate = null;
+          }
+        }
+        
         const showTimestamp =
           idx === 0 ||
-          Math.abs(new Date(msg.timestamp).getTime() - new Date(messages[idx - 1].timestamp).getTime()) > 5 * 60 * 1000;
+          (msgDate && prevDate && Math.abs(msgDate.getTime() - prevDate.getTime()) > 5 * 60 * 1000);
 
         return (
           <div key={msg.id}>
-            {showTimestamp && (
+            {showTimestamp && msgDate && (
               <div className="text-center text-xs text-gray-500 my-4">
-                {format(new Date(msg.timestamp), 'PPpp', { locale: fr })}
+                {format(msgDate, 'PPpp', { locale: fr })}
               </div>
             )}
 
@@ -68,7 +104,7 @@ export function MessageList({ messages, currentUserId, isLoading = false }: Mess
               >
                 <p className="text-sm">{msg.content}</p>
                 <p className={`text-xs mt-1 ${isCurrentUser ? 'text-indigo-100' : 'text-gray-500'}`}>
-                  {format(new Date(msg.timestamp), 'HH:mm')}
+                  {msgDate ? format(msgDate, 'HH:mm') : 'N/A'}
                 </p>
               </div>
             </div>

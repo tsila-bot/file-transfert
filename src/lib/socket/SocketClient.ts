@@ -20,7 +20,10 @@ export type SocketEvent =
   | 'typing_stop'
   | 'chat:conversations_loaded'
   | 'chat:messages_loaded'
+  | 'chat:messages_marked_as_read'
   | 'chat:send_message'
+  | 'chat:mark_conversation_read'
+  | 'unread_count_updated'
   | 'chat:start_conversation'
   | 'chat:conversation_started'
   | 'chat:get_online_users'
@@ -90,7 +93,7 @@ export class SocketClient {
     });
 
     this.setupDefaultHandlers();
-    this.setupEventForwarding(); // 🆕 Nouvelle méthode
+    // 🆕 Nouvelle méthode pour router tous les événements via onAny()
 
     // If server immediately rejects auth, keep socket instance for reconnect attempts
   }
@@ -126,16 +129,8 @@ export class SocketClient {
       this.eventHandlers.set(event, []);
     }
 
-    // Installer le listener socket.io seulement si le socket existe
-    // et si l'événement n'a pas déjà été forwardé (éviter doublons)
-    if (this.socket && !this.forwardedEvents.has(event)) {
-      this.socket.on(event, (...args: any[]) => {
-        this.triggerEvent(event, ...args);
-      });
-      this.forwardedEvents.add(event);
-    }
-
-    // Ajouter le handler (éviter les doublons pour le même handler)
+    // ⚠️ NE PAS enregistrer socket.on() car onAny() s'en charge déjà!
+    // Ajouter juste le handler à la liste
     const handlers = this.eventHandlers.get(event)!;
     if (handlers.indexOf(handler) !== -1) {
       console.warn(`Handler for '${event}' already registered`);
@@ -214,20 +209,12 @@ export class SocketClient {
   }
 
   /**
-   * 🆕 Configurer le forwarding des événements socket.io
+   * 🆕 Configurer le forwarding des événements socket.io (SUPPRIMÉ - onAny() s'en charge)
    */
-  private setupEventForwarding(): void {
-    if (!this.socket) return;
-
-    // Pour chaque événement déjà enregistré, installer le listener
-    this.eventHandlers.forEach((_, event) => {
-      if (this.forwardedEvents.has(event)) return;
-      this.socket!.on(event, (...args: any[]) => {
-        this.triggerEvent(event, ...args);
-      });
-      this.forwardedEvents.add(event);
-    });
-  }
+  // private setupEventForwarding(): void {
+  //   if (!this.socket) return;
+  //   // Déprécié: onAny() gère maintenant tous les événements
+  // }
 
   private setupDefaultHandlers(): void {
     if (!this.socket) return;
@@ -265,9 +252,15 @@ export class SocketClient {
       this.triggerEvent('ice_servers', data);
     });
 
-    // 🆕 Logger tous les événements pour debug
-    this.socket.onAny((event, ...args) => {
+    // 🆕 ✅ IMPORTANT: Utiliser onAny() pour router TOUS les événements vers les handlers
+    this.socket.onAny((event: string, ...args: any[]) => {
       console.log(`📡 Socket event '${event}':`, args);
+      
+      // Route l'événement vers les handlers enregistrés
+      // Sauf si c'est un événement de contrôle (connect, disconnect, etc)
+      if (event !== 'connect' && event !== 'disconnect' && event !== 'connect_error' && event !== 'error') {
+        this.triggerEvent(event as SocketEvent, ...args);
+      }
     });
   }
 
