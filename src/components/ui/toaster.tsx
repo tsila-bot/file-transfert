@@ -14,10 +14,11 @@ export function Toaster() {
           variant={toast.variant}
           title={toast.title}
           description={toast.description}
-          action={toast.action}
+          // action={toast.action} // Not supported in new Toast type
           onClose={() => dismiss(toast.id)}
         />
       ))}
     </div>
   );
 }
+

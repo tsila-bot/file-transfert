@@ -36,11 +36,44 @@ export interface RejectTransferData {
   reason?: string;
 }
 
+export interface TransferHistoryItem {
+  id: string;
+  senderId: string;
+  receiverId: string;
+  senderName?: string;
+  receiverName?: string;
+  fileHash: string;
+  fileName?: string;
+  fileSizeBytes: number
+  mimeType: string;
+  transferType: 'P2P_DIRECT' | 'P2P_MULTI_SOURCE' | 'PUBLIC_LINK' | 'GROUP_TRANSFER';
+  status: 'SUCCESS' | 'FAILED' | 'PARTIAL' | 'CANCELLED';
+  duration?: number;
+  avgSpeed?: number;
+  errorCode?: string;
+  teamId?: string;
+  createdAt: string;
+  updatedAt?: string;
+  // Calculé par le backend
+  direction?: 'SENT' | 'RECEIVED';
+  peerName?: string;
+}
+
 export interface TransferStats {
   totalTransfers: number;
   totalSize: number;
-  completedTransfers: number;
+  sentTransfers: number;
+  sentSize: number;
+  receivedTransfers: number;
+  receivedSize: number;
+  successfulTransfers: number;
   failedTransfers: number;
+  partialTransfers: number;
+  cancelledTransfers: number;
+  p2pTransfers: number;
+  groupTransfers: number;
+  publicLinkTransfers: number;
+  averageSpeed?: number;
 }
 
 export const transferAPI = {
@@ -79,22 +112,43 @@ export const transferAPI = {
   /**
    * Obtenir l'historique des transferts
    */
-  async getTransferHistory(limit: number = 50, offset: number = 0): Promise<{
-    success: boolean;
-    transfers: FileTransfer[];
+  async getUserTransferHistory(skip: number = 0, take: number = 50): Promise<{
+    transfers: TransferHistoryItem[];
     total: number;
   }> {
-    const response = await apiClient.get('/transfers/history', {
-      params: { limit, offset },
+    const response = await apiClient.get('/api/transfers/history', {
+      params: { skip, take },
     });
-    return response.data;
+    return response.data.data || response.data;
   },
 
   /**
    * Obtenir les statistiques de transfert
    */
-  async getTransferStats(): Promise<{ success: boolean; stats: TransferStats }> {
-    const response = await apiClient.get('/transfers/stats');
+  async getUserTransferStats(): Promise<TransferStats> {
+    const response = await apiClient.get('/api/transfers/stats');
+    return response.data.data || response.data;
+  },
+
+  /**
+   * Enregistrer un transfert complété
+   */
+  async logTransfer(data: {
+    receiverId: string;
+    senderName?: string;
+    receiverName?: string;
+    fileHash: string;
+    fileName?: string;
+    fileSizeBytes: number;
+    mimeType: string;
+    transferType: 'P2P_DIRECT' | 'P2P_MULTI_SOURCE' | 'PUBLIC_LINK' | 'GROUP_TRANSFER';
+    status: 'SUCCESS' | 'FAILED' | 'PARTIAL' | 'CANCELLED';
+    duration: number; // en secondes
+    avgSpeed: number; // en Mbps
+    errorCode?: string;
+    teamId?: string;
+  }): Promise<{ success: boolean; data?: any }> {
+    const response = await apiClient.post('/api/transfers/log', data);
     return response.data;
   },
 };

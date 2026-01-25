@@ -17,6 +17,8 @@ import {
   deleteTransferState,
 } from '@/core/storage/indexeddb';
 import { ConnectionState } from '@/types/types';
+import { transferAPI } from '@/core/services/api/transfer.service';
+import { useAuthStore } from '@/stores/authStore';
 
 interface ChunkToSend {
   chunk: Chunk;
@@ -873,12 +875,72 @@ export class TransferEngine {
       transfer.progress.percentage = 100;
 
       this.emitTransferUpdate(transfer);
+      
+      // Log the transfer completion
+      const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
+      const avgSpeed = transfer.fileSize > 0 ? (transfer.fileSize / (1024 * 1024) / duration) : 0; // Mbps
+      
+      // Only log if this is the SENDER (to avoid double-logging from both peers)
+      if (transfer.direction === 'send') {
+        try {
+          const currentUser = useAuthStore.getState().user;
+          const senderName = currentUser?.name || 'Unknown';
+          const receiverName = this.connection['peerName'] || 'Unknown';
+
+          await transferAPI.logTransfer({
+            receiverId: transfer.peerId,
+            senderName,
+            receiverName,
+            fileHash: transfer.fileHash || 'unknown',
+            fileName: transfer.fileName || 'unknown',
+            fileSizeBytes: transfer.fileSize,
+            mimeType: transfer.mimeType || 'application/octet-stream',
+            transferType: 'P2P_DIRECT',
+            status: 'SUCCESS',
+            duration,
+            avgSpeed: Math.round(avgSpeed * 100) / 100,
+            teamId: undefined,
+          });
+        } catch (logError) {
+          console.error('Failed to log transfer:', logError);
+          // Continue anyway - logging should not block transfer
+        }
+      }
+      
       this.cleanupTransfer(fileId);
     } catch (error) {
       console.error('Failed to complete transfer:', error);
       transfer.status = 'failed';
       transfer.error = (error as Error).message;
       this.emitTransferUpdate(transfer);
+      
+      // Log the failed transfer (only if sender to avoid double-logging)
+      if (transfer.direction === 'send') {
+        const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
+        try {
+          const currentUser = useAuthStore.getState().user;
+          const senderName = currentUser?.name || 'Unknown';
+          const receiverName = this.connection['peerName'] || 'Unknown';
+
+          await transferAPI.logTransfer({
+            receiverId: transfer.peerId,
+            senderName,
+            receiverName,
+            fileHash: transfer.fileHash || 'unknown',
+            fileName: transfer.fileName || 'unknown',
+            fileSizeBytes: transfer.fileSize,
+            mimeType: transfer.mimeType || 'application/octet-stream',
+            transferType: 'P2P_DIRECT',
+            status: 'FAILED',
+            duration,
+            avgSpeed: 0,
+            errorCode: (error as Error).message,
+            teamId: undefined,
+          });
+        } catch (logError) {
+          console.error('Failed to log failed transfer:', logError);
+        }
+      }
     }
   }
 

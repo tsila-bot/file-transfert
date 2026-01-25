@@ -101,7 +101,7 @@ export default function PublicLinkPage() {
   // État de chargement
   if (loading) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+      <div className="min-h-screen bg-linear-to-br from-slate-50 to-slate-100 flex items-center justify-center px-4">
         <div className="text-center">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto mb-4"></div>
           <p className="text-gray-600">Chargement du lien...</p>
@@ -113,7 +113,7 @@ export default function PublicLinkPage() {
   // Erreur
   if (error) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center px-4">
+      <div className="min-h-screen bg-linear-to-br from-slate-50 to-slate-100 flex items-center justify-center px-4">
         <div className="bg-white rounded-lg shadow-lg p-8 max-w-md w-full text-center">
           <AlertCircle className="w-16 h-16 text-red-500 mx-auto mb-4" />
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Erreur</h1>
@@ -132,13 +132,13 @@ export default function PublicLinkPage() {
   // Lien trouvé
   if (linkInfo) {
     return (
-      <div className="min-h-screen bg-gray-50 py-8 px-4">
+      <div className="min-h-screen bg-linear-to-br from-slate-50 to-slate-100 py-8 px-4">
         <div className="max-w-2xl mx-auto">
-          <div className="bg-white rounded-lg shadow-lg p-8">
+          <div className="bg-white rounded-xl shadow-lg p-8">
             {/* Succès - Lien accessible */}
             {isUnlocked && (
-              <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg flex items-start gap-3">
-                <CheckCircle className="w-6 h-6 text-green-600 flex-shrink-0 mt-0.5" />
+              <div className="mb-6 p-4 bg-green-50 border border-green-200 rounded-lg flex items-start gap-4">
+                <CheckCircle className="w-6 h-6 text-green-600 shrink-0 mt-0.5" />
                 <div>
                   <h3 className="font-semibold text-green-900">Lien accessible</h3>
                   <p className="text-green-700 text-sm">Vous pouvez maintenant télécharger le fichier.</p>

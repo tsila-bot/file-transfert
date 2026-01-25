@@ -5,6 +5,7 @@ import { getSocketClient } from '../../lib/socket/SocketClient';
 import { getTransferManager } from './TransferManager';
 import { usePeerStore } from '@/stores/peerStore';
 import { ConnectionState, SignalData } from '../../types/types';
+import { isStructuredError, handleStructuredError } from '../../lib/socket/error-codes';
 
 export class P2PManager {
   private connections: Map<string, PeerConnection> = new Map();
@@ -12,6 +13,7 @@ export class P2PManager {
   private signalingUnsubscribers: Array<() => void> = [];
   private currentUserId: string | null = null;
   private isConnecting: boolean = false; // Prevent multiple simultaneous connection attempts
+  private pendingOffers: Set<string> = new Set(); // Prevent duplicate offer confirmations
 
   constructor(userId: string) {
     this.currentUserId = userId;
@@ -33,16 +35,34 @@ export class P2PManager {
     this.isConnecting = true;
 
     try {
-      // Vérifier si une connexion existe déjà
+      // ✅ FIX: Vérifier si une connexion existe déjà ET si elle est CONNECTÉE
       if (this.connections.has(peerId)) {
         const existing = this.connections.get(peerId)!;
-        if (existing.isConnected()) {
-          console.log('Already connected to this peer');
+        
+        // Si FULLY CONNECTÉE (data channels prêts), la réutiliser
+        if (existing.isConnected() && existing.areDataChannelsReady()) {
+          console.log('Already fully connected to this peer');
           return existing;
-        } else {
-          // Fermer l'ancienne connexion
+        }
+        
+        // Si elle n'est pas connectée, fermer l'ancienne tentative
+        if (!existing.isConnected()) {
+          console.log('Existing connection attempt failed, closing and retrying...');
           existing.close();
           this.connections.delete(peerId);
+        } else {
+          // Si connectée mais data channels pas ready, attendre un peu
+          console.log('Connection exists but data channels not ready, waiting...');
+          await new Promise(resolve => setTimeout(resolve, 500));
+          
+          if (existing.areDataChannelsReady()) {
+            console.log('Data channels are now ready, using existing connection');
+            return existing;
+          } else {
+            console.log('Data channels still not ready after wait, closing and retrying...');
+            existing.close();
+            this.connections.delete(peerId);
+          }
         }
       }
 
@@ -102,12 +122,38 @@ export class P2PManager {
   ): Promise<PeerConnection> {
     console.log(`📞 Accepting connection from ${peerName}...`);
 
-    // Close any existing connection with this peer before creating a new one
+    // ✅ FIX: Only close existing connection if it's NOT already fully connected
+    // If it's already connected (data channels open), keep using it
+    // Only close if it's still connecting or in a failed/closed state
     if (this.connections.has(peerId)) {
       const existing = this.connections.get(peerId)!;
-      console.log(`🧹 Closing existing connection with ${peerId} before accepting new one`);
-      existing.close();
-      this.connections.delete(peerId);
+      
+      // If already fully connected, just return it
+      if (existing.isConnected() && existing.areDataChannelsReady()) {
+        console.log(`✅ Already fully connected to ${peerId}, reusing existing connection`);
+        return existing;
+      }
+      
+      // Only close if it's in a transient state (connecting, disconnected, etc)
+      if (!existing.isConnected()) {
+        console.log(`🧹 Closing incomplete connection with ${peerId} before accepting new one`);
+        existing.close();
+        this.connections.delete(peerId);
+      } else {
+        // If it's connected but not ready (data channels), wait a bit
+        console.log(`⏳ Existing connection with ${peerId} is in progress, waiting...`);
+        await new Promise(resolve => setTimeout(resolve, 500));
+        
+        // Check again
+        if (existing.areDataChannelsReady()) {
+          console.log(`✅ Existing connection to ${peerId} is now ready`);
+          return existing;
+        } else {
+          console.log(`🧹 Existing connection with ${peerId} still not ready, closing and creating new`);
+          existing.close();
+          this.connections.delete(peerId);
+        }
+      }
     }
 
     // Créer une nouvelle connexion (receveur)
@@ -115,9 +161,20 @@ export class P2PManager {
       peerId,
       peerName,
       isInitiator: false,
-      onStateChange: (state) => this.handleStateChange(peerId, state),
+      onStateChange: (state) => {
+        // ✅ FIX: Remove peer from pendingOffers once connection is established
+        if (state === 'connected') {
+          this.pendingOffers.delete(peerId);
+          console.log(`✅ Connection established with ${peerName}, removing from pending offers`);
+        }
+        this.handleStateChange(peerId, state);
+      },
       onDataChannelOpen: () => this.handleDataChannelOpen(peerId),
-      onError: (error) => this.handleError(peerId, error),
+      onError: (error) => {
+        // ✅ FIX: Also remove from pending offers on error
+        this.pendingOffers.delete(peerId);
+        this.handleError(peerId, error);
+      },
     });
 
     // Stocker la connexion
@@ -155,6 +212,8 @@ export class P2PManager {
     } catch (error) {
       console.error('Failed to accept connection:', error);
       this.connections.delete(peerId);
+      // ✅ FIX: Remove from pending offers on error
+      this.pendingOffers.delete(peerId);
       throw error;
     }
   }
@@ -206,6 +265,12 @@ export class P2PManager {
     const offOffer = this.socketClient.on('offer', async (data: any) => {
       console.log(`📥 Received offer from ${data.fromUserName}`);
 
+      // ✅ FIX: Ignore duplicate offers from same peer
+      if (this.pendingOffers.has(data.fromUserId)) {
+        console.log(`⏳ Offer from ${data.fromUserName} already pending confirmation, ignoring duplicate`);
+        return;
+      }
+
       // Check if we already have a connection with this peer
       if (this.connections.has(data.fromUserId)) {
         const existing = this.connections.get(data.fromUserId)!;
@@ -221,10 +286,16 @@ export class P2PManager {
         return;
       }
 
+      // ✅ FIX: Add peer to pending offers set
+      this.pendingOffers.add(data.fromUserId);
+
       // Demander confirmation à l'utilisateur
       const accept = window.confirm(
         `${data.fromUserName} souhaite se connecter. Accepter?`
       );
+
+      // ✅ FIX: Remove from pending offers after user confirmation
+      this.pendingOffers.delete(data.fromUserId);
 
       if (accept) {
         await this.acceptConnection(
@@ -241,8 +312,23 @@ export class P2PManager {
       console.log(`📥 Received answer from ${data.fromUserId}`);
 
       const connection = this.connections.get(data.fromUserId);
-      if (connection) {
+      if (!connection) {
+        console.warn(`⚠️ No connection found for peer ${data.fromUserId}, ignoring answer`);
+        return;
+      }
+
+      // ✅ FIX: Check connection state before processing answer
+      // Note: connectionState is 'connecting' when offer has been sent
+      if (connection.connectionState === 'closed') {
+        console.warn(`⚠️ Connection is closed, ignoring answer`);
+        return;
+      }
+
+      try {
         await connection.handleAnswer(data.answer);
+      } catch (error) {
+        console.error(`Error handling answer from ${data.fromUserId}:`, error);
+        // Don't propagate error, let connection handle its own error state
       }
     });
     this.signalingUnsubscribers.push(offAnswer);
@@ -255,6 +341,22 @@ export class P2PManager {
       }
     });
     this.signalingUnsubscribers.push(offIce);
+
+    // ✅ FIX: Handle structured errors from backend
+    const offError = this.socketClient.on('socket:error:structured', (error: any) => {
+      if (isStructuredError(error)) {
+        console.error(`❌ Socket error [${error.code}]: ${error.message}`);
+        handleStructuredError(error);
+        
+        // Handle specific error scenarios
+        if (error.targetUserId && this.connections.has(error.targetUserId)) {
+          const connection = this.connections.get(error.targetUserId)!;
+          connection.close();
+          this.connections.delete(error.targetUserId);
+        }
+      }
+    });
+    this.signalingUnsubscribers.push(offError);
   }
 
   /**
@@ -287,12 +389,23 @@ export class P2PManager {
 
     // Si la connexion a échoué ou est fermée, la retirer
     if (state === 'failed' || state === 'closed') {
+      // ✅ FIX: Récupérer le peerName AVANT de supprimer la connexion
+      const connection = this.connections.get(peerId);
+      const peerName = connection?.['peerName'] || 'Peer';
+
       this.connections.delete(peerId);
       try {
         getTransferManager().removePeer(peerId);
       } catch (err) {
         console.warn('Failed to remove peer from TransferManager:', err);
       }
+
+      // ✅ Afficher une notification à l'utilisateur avec le bon nom
+      window.dispatchEvent(
+        new CustomEvent('p2p:disconnected', {
+          detail: { peerId, peerName, state },
+        })
+      );
     }
   }
 

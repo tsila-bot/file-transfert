@@ -6,8 +6,10 @@ import { ENV } from '../../config/env';
 export type SocketEvent =
   | 'connect'
   | 'disconnect'
+  | 'connect_error'
   | 'authenticated'
   | 'online_users'
+  | 'online_users_updated'
   | 'user_online'
   | 'user_offline'
   | 'user_status_change'
@@ -52,6 +54,7 @@ export type SocketEvent =
   | 'call_answer'
   | 'call_end'
   | 'file_transfer_offer'
+  | 'socket:error:structured'
   | 'error';
 
 export interface IceServer {
@@ -189,7 +192,11 @@ export class SocketClient {
     const handlers = this.eventHandlers.get(event);
 
     if (!handlers || handlers.length === 0) {
-      console.warn(`⚠️ Event '${event}' triggered but no handlers registered`);
+      // ✅ FIX: Only warn for important events, ignore ping/pong/connect
+      const silentEvents = ['connect', 'disconnect', 'ping', 'pong', 'ice_servers'];
+      if (!silentEvents.includes(event)) {
+        console.warn(`⚠️ Event '${event}' triggered but no handlers registered`);
+      }
       return;
     }
 
@@ -243,6 +250,11 @@ export class SocketClient {
 
     this.socket.on('error', (error) => {
       console.error('❌ Socket error:', error);
+      // ✅ FIX: Handle structured error codes from backend
+      if (error && typeof error === 'object' && 'code' in error) {
+        console.error(`❌ Error Code: ${(error as any).code} - ${(error as any).message}`);
+        this.triggerEvent('socket:error:structured', error);
+      }
       this.triggerEvent('error', error);
     });
 

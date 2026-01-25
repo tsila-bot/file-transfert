@@ -229,6 +229,12 @@ export default function TransferZone() {
 					<Link2 size={16} />
 					Créer un lien public
 				</button>
+				<button
+					onClick={() => router.push('/dashboard/transfer-history')}
+					className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm font-medium flex items-center gap-2"
+				>
+					📊 Historique des transferts
+				</button>
 			</div>
 
 			<div className="flex gap-3 items-center mb-4">
@@ -342,62 +348,79 @@ export default function TransferZone() {
 			</div>
 		</div>
 
-		{/* Dialog pour demander le mot de passe */}
+		{/* Dialog pour demander le mot de passe - Styled Modal */}
 		{passwordDialog.show && (
-			<div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
-				<div className="bg-white rounded-lg shadow-xl max-w-sm w-full p-6">
-					<h3 className="text-lg font-semibold mb-4 text-gray-900">🔒 Fichier protégé par mot de passe</h3>
-
-					<p className="text-gray-600 mb-4 text-sm">
-						Ce fichier est chiffré avec un mot de passe. Veuillez entrer le mot de passe pour le recevoir.
-					</p>
-
-					{passwordDialogError && (
-						<div className="mb-4 p-2 bg-red-50 border border-red-200 rounded text-sm text-red-700">
-							❌ {passwordDialogError}
+			<div className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-fade-in">
+				<div className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden animate-scale-in">
+					{/* Header avec gradient */}
+					<div className="bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-8 text-white">
+						<div className="flex items-center gap-3 mb-2">
+							<div className="w-12 h-12 bg-white/20 rounded-full flex items-center justify-center text-2xl">🔒</div>
+							<h3 className="text-2xl font-bold">Accès sécurisé</h3>
 						</div>
-					)}
-
-					<div className="relative flex items-center mb-2">
-						<input
-							type={showPasswordDialog ? 'text' : 'password'}
-							placeholder="Entrez le mot de passe..."
-							value={passwordInput}
-							onChange={(e) => {
-								setPasswordInput(e.target.value)
-								setPasswordDialogError('')
-							}}
-							onKeyDown={(e) => {
-								if (e.key === 'Enter') {
-									handleSubmitPassword(passwordDialog.fileId, passwordDialog.peerId, passwordInput)
-								}
-							}}
-							className="w-full px-3 py-2 pr-10 border border-gray-300 rounded-lg text-black focus:outline-none focus:ring-2 focus:ring-indigo-500"
-							autoFocus
-						/>
-						<button
-							type="button"
-							onClick={() => setShowPasswordDialog(!showPasswordDialog)}
-							className="absolute right-3 text-gray-600 hover:text-gray-800 transition-colors"
-							title={showPasswordDialog ? 'Masquer' : 'Afficher'}
-						>
-							{showPasswordDialog ? <EyeOff size={18} /> : <Eye size={18} />}
-						</button>
+						<p className="text-indigo-100 text-sm mt-2">Ce fichier est chiffré et protégé</p>
 					</div>
 
-					<div className="flex gap-3 justify-end">
-						<button
-							onClick={handleClosePasswordDialog}
-							className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
-						>
-							Annuler
-						</button>
-						<button
-							onClick={() => handleSubmitPassword(passwordDialog.fileId, passwordDialog.peerId, passwordInput)}
-							className="px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg transition-colors"
-						>
-							Accepter
-						</button>
+					{/* Body */}
+					<div className="p-6">
+						<p className="text-gray-700 mb-6 text-sm leading-relaxed">
+							Pour recevoir ce fichier, veuillez entrer le mot de passe fourni par l'expéditeur.
+						</p>
+
+						{/* Error message avec animation */}
+						{passwordDialogError && (
+							<div className="mb-4 p-3 bg-gradient-to-r from-red-50 to-rose-50 border border-red-200 rounded-lg text-sm text-red-700 flex items-start gap-2 animate-shake">
+								<span className="text-lg">⚠️</span>
+								<div>
+									<p className="font-medium">Mot de passe incorrect</p>
+									<p className="text-red-600 text-xs mt-1">{passwordDialogError}</p>
+								</div>
+							</div>
+						)}
+
+						{/* Password input */}
+						<div className="relative flex items-center mb-6">
+							<input
+								type={showPasswordDialog ? 'text' : 'password'}
+								placeholder="••••••••••••••••"
+								value={passwordInput}
+								onChange={(e) => {
+									setPasswordInput(e.target.value)
+									setPasswordDialogError('')
+								}}
+								onKeyDown={(e) => {
+									if (e.key === 'Enter') {
+										handleSubmitPassword(passwordDialog.fileId, passwordDialog.peerId, passwordInput)
+									}
+								}}
+								className="w-full px-4 py-3 pl-4 pr-12 border-2 border-gray-200 rounded-xl text-gray-900 placeholder-gray-400 focus:outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 transition-all duration-200 text-base"
+								autoFocus
+							/>
+							<button
+								type="button"
+								onClick={() => setShowPasswordDialog(!showPasswordDialog)}
+								className="absolute right-3 text-gray-500 hover:text-gray-700 transition-colors p-1 hover:bg-gray-100 rounded-lg"
+								title={showPasswordDialog ? 'Masquer' : 'Afficher'}
+							>
+								{showPasswordDialog ? <EyeOff size={20} /> : <Eye size={20} />}
+							</button>
+						</div>
+
+						{/* Actions */}
+						<div className="flex gap-3 justify-end">
+							<button
+								onClick={handleClosePasswordDialog}
+								className="px-5 py-3 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl transition-all duration-200 font-medium text-sm"
+							>
+								Annuler
+							</button>
+							<button
+								onClick={() => handleSubmitPassword(passwordDialog.fileId, passwordDialog.peerId, passwordInput)}
+								className="px-6 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 text-white rounded-xl transition-all duration-200 font-medium text-sm shadow-lg hover:shadow-xl hover:scale-105"
+							>
+								✓ Accepter
+							</button>
+						</div>
 					</div>
 				</div>
 			</div>

@@ -35,10 +35,11 @@ export class PeerConnection extends EventEmitter {
   private peerId: string;
   private peerName: string;
   private isInitiator: boolean;
-  private connectionState: ConnectionState = 'new';
+  private _connectionState: ConnectionState = 'new';
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private connectionTimeout: NodeJS.Timeout | null = null;
   private lastHeartbeatReceived: number = Date.now();
+  private remoteDescriptionPending: boolean = false; // ✅ FIX: Prevent duplicate answer handling
 
   constructor(options: PeerConnectionOptions) {
     super();
@@ -103,16 +104,10 @@ export class PeerConnection extends EventEmitter {
         };
       }
 
-      if (this.pendingIceCandidates.length > 0 && this.peerConnection) {
-        for (const c of this.pendingIceCandidates) {
-          try {
-            await this.peerConnection.addIceCandidate(new RTCIceCandidate(c));
-            console.log('✅ ICE candidate applied from pending queue');
-          } catch (err) {
-            console.warn('Failed to apply pending ICE candidate:', err);
-          }
-        }
-        this.pendingIceCandidates = [];
+      // ⏸️ Don't flush ICE candidates yet - wait until remote description is set
+      // This will happen after offer/answer exchange completes
+      if (this.pendingIceCandidates.length > 0) {
+        console.log(`⏳ ${this.pendingIceCandidates.length} ICE candidates queued, will apply after remote description`);
       }
 
       this.updateState('connecting');
@@ -180,19 +175,46 @@ export class PeerConnection extends EventEmitter {
 
     try {
       const signalingState = this.peerConnection.signalingState;
+      
+      // ✅ FIX: Check for all cases where we can't set remote description
       if (signalingState === 'closed') {
-        console.warn('PeerConnection closed - ignoring answer');
+        console.warn('🔴 PeerConnection closed - ignoring answer');
         return;
       }
 
-      // If already stable and remote description is an answer, skip
-      const remoteDesc = this.peerConnection.remoteDescription;
-      if (signalingState === 'stable' && remoteDesc && remoteDesc.type === 'answer') {
-        console.log('Remote answer already set, skipping');
+      // ✅ FIX: If already stable, answer is already processed
+      if (signalingState === 'stable') {
+        const remoteDesc = this.peerConnection.remoteDescription;
+        if (remoteDesc && remoteDesc.type === 'answer') {
+          console.log('✅ Remote answer already set, skipping duplicate');
+          return;
+        }
+      }
+
+      // ✅ FIX: Only set remote description if we're in "have-local-offer" state
+      if (signalingState !== 'have-local-offer' && signalingState !== 'stable') {
+        console.warn(`⚠️ Cannot set remote answer in state '${signalingState}' - skipping`);
         return;
       }
+
+      // ✅ FIX: Verify this is actually an answer
+      if (answer.type !== 'answer') {
+        console.warn(`⚠️ Expected answer but got ${answer.type} - skipping`);
+        return;
+      }
+
+      // ✅ FIX: Check for rapid successive answers
+      if (this.remoteDescriptionPending) {
+        console.warn('⏳ Remote description already pending - skipping duplicate');
+        return;
+      }
+
+      this.remoteDescriptionPending = true;
 
       await this.peerConnection.setRemoteDescription(new RTCSessionDescription(answer));
+      console.log('✅ Remote answer set successfully');
+
+      this.remoteDescriptionPending = false;
 
       // Flush any pending ICE candidates now that remote description is set
       if (this.pendingIceCandidates.length > 0) {
@@ -209,9 +231,15 @@ export class PeerConnection extends EventEmitter {
         }
       }
     } catch (error: any) {
+      this.remoteDescriptionPending = false;
+      
       const msg = String(error && error.message ? error.message : error);
-      if (msg.includes('Cannot set remote answer in state stable')) {
-        console.warn('Cannot set remote answer in state stable — ignoring');
+      
+      // ✅ FIX: Handle all state-related errors gracefully
+      if (msg.includes('Cannot set remote answer in state') || 
+          msg.includes('Called in wrong state') ||
+          msg.includes('setRemoteDescription')) {
+        console.warn('⚠️ Cannot set remote answer right now (connection state changed) — ignoring');
         return;
       }
 
@@ -226,7 +254,7 @@ export class PeerConnection extends EventEmitter {
    */
   async addIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
     if (!this.peerConnection) {
-      if (this.connectionState === 'closed' || this.connectionState === 'failed') {
+      if (this._connectionState === 'closed' || this._connectionState === 'failed') {
         console.warn('Dropping ICE candidate because connection is closed/failed');
         return;
       }
@@ -490,7 +518,14 @@ export class PeerConnection extends EventEmitter {
    * Vérifier si connecté
    */
   isConnected(): boolean {
-    return this.connectionState === 'connected';
+    return this._connectionState === 'connected';
+  }
+
+  /**
+   * Get the current connection state
+   */
+  get connectionState(): ConnectionState {
+    return this._connectionState;
   }
 
   /**
@@ -861,7 +896,7 @@ export class PeerConnection extends EventEmitter {
   private startConnectionTimeout(): void {
     this.clearConnectionTimeout();
     this.connectionTimeout = setTimeout(() => {
-      if (this.connectionState === 'connecting') {
+      if (this._connectionState === 'connecting') {
         console.error('⏱️ Connection timeout');
         this.updateState('failed');
         // Don't auto-reconnect on timeout to prevent connection flapping
@@ -948,8 +983,8 @@ export class PeerConnection extends EventEmitter {
    * Mettre à jour l'état de la connexion
    */
   private updateState(state: ConnectionState): void {
-    if (this.connectionState !== state) {
-      this.connectionState = state;
+    if (this._connectionState !== state) {
+      this._connectionState = state;
       this.emit('statechange', state);
     }
   }
