@@ -61,9 +61,14 @@ const STATUS_COLORS: Record<string, { bg: string; text: string; icon: React.Reac
     icon: <AlertCircle className="w-5 h-5" />,
   },
   CANCELLED: {
-    bg: 'bg-gray-50',
-    text: 'text-gray-700',
+    bg: 'bg-blue-50',
+    text: 'text-blue-700',
     icon: <Pause className="w-5 h-5" />,
+  },
+  REJECTED: {
+    bg: 'bg-orange-50',
+    text: 'text-orange-700',
+    icon: <XCircle className="w-5 h-5" />,
   },
 }
 
@@ -109,12 +114,17 @@ export default function TransferHistoryPage() {
       const skip = (page - 1) * pageSize
 
       const response = await transferAPI.getUserTransferHistory(skip, pageSize)
+      console.log('📊 API Response (raw):', response);
+      console.log('📊 All transfers from API:', response.transfers);
+      console.log('📊 Filter status:', filterStatus);
 
       // Appliquer les filtres côté client (au besoin)
       let filtered = response.transfers || []
+      console.log('📊 Filtered transfers before status filter:', filtered.length);
 
       if (filterStatus !== 'ALL') {
         filtered = filtered.filter((t: TransferHistoryItem) => t.status === filterStatus)
+        console.log(`📊 Filtered by status "${filterStatus}":`, filtered);
       }
 
       if (filterType !== 'ALL') {
@@ -129,6 +139,7 @@ export default function TransferHistoryPage() {
         filtered = filtered.filter((t: TransferHistoryItem) => new Date(t.createdAt) <= new Date(dateRangeEnd))
       }
 
+      console.log('📊 Final filtered transfers to display:', filtered);
       setTransfers(filtered)
       setTotal(response.total)
       setError('')
@@ -330,6 +341,7 @@ export default function TransferHistoryPage() {
                   <option value="FAILED">✗ Échoué</option>
                   <option value="PARTIAL">⚠ Partiel</option>
                   <option value="CANCELLED">⊘ Annulé</option>
+                  <option value="REJECTED">✕ Refusé</option>
                 </select>
               </div>
 

@@ -83,7 +83,7 @@ export default function ProfilePage() {
       {/* Profil */}
       <div className="bg-white rounded-lg shadow p-6 mb-6">
         <div className="flex items-center justify-between mb-6">
-          <h2 className="text-xl font-semibold">Informations personnelles</h2>
+          <h2 className="text-xl font-bold text-gray-900">Informations personnelles</h2>
           {!isEditing && (
             <button
               onClick={() => setIsEditing(true)}
@@ -98,7 +98,7 @@ export default function ProfilePage() {
           <form onSubmit={handleSubmit} className="space-y-4">
             {/* Avatar */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-semibold text-gray-900 mb-1">
                 Avatar
               </label>
               <div className="flex items-center space-x-4">
@@ -121,14 +121,14 @@ export default function ProfilePage() {
                   value={formData.avatar}
                   onChange={handleChange}
                   placeholder="URL de l'avatar"
-                  className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  className="flex-1 px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 placeholder-gray-400"
                 />
               </div>
             </div>
 
             {/* Nom */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-semibold text-gray-900 mb-1">
                 Nom complet
               </label>
               <input
@@ -137,20 +137,20 @@ export default function ProfilePage() {
                 value={formData.name}
                 onChange={handleChange}
                 required
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 placeholder-gray-400"
               />
             </div>
 
             {/* Email (non modifiable) */}
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">
+              <label className="block text-sm font-semibold text-gray-900 mb-1">
                 Email
               </label>
               <input
                 type="email"
                 value={authUser.email}
                 disabled
-                className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-gray-500 cursor-not-allowed"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md bg-gray-50 text-gray-900 cursor-not-allowed"
               />
             </div>
 
@@ -172,7 +172,7 @@ export default function ProfilePage() {
                     avatar: authUser.avatar || '',
                   });
                 }}
-                className="px-4 py-2 border border-gray-300 hover:bg-gray-50 rounded-md transition-colors"
+                className="px-4 py-2 border border-gray-300 hover:bg-gray-50 rounded-md transition-colors font-medium text-gray-900"
               >
                 Annuler
               </button>
@@ -196,33 +196,33 @@ export default function ProfilePage() {
                 )}
               </div>
               <div>
-                <p className="text-lg font-medium">{authUser.name}</p>
-                <p className="text-gray-600">{authUser.email}</p>
+                <p className="text-lg font-semibold text-gray-900">{authUser.name}</p>
+                <p className="text-gray-700">{authUser.email}</p>
               </div>
             </div>
 
             {/* Informations */}
-            <div className="grid grid-cols-2 gap-4 pt-4 border-t">
+            <div className="grid grid-cols-2 gap-6 pt-6 border-t">
               <div>
-                <p className="text-sm text-gray-600">Rôle</p>
-                <p className="font-medium">{authUser.role}</p>
+                <p className="text-sm font-semibold text-gray-900 mb-1">Rôle</p>
+                <p className="font-medium text-gray-700">{authUser.role}</p>
               </div>
               <div>
-                <p className="text-sm text-gray-600">Membre depuis</p>
-                <p className="font-medium">
+                <p className="text-sm font-semibold text-gray-900 mb-1">Membre depuis</p>
+                <p className="font-medium text-gray-700">
                   {new Date(authUser.createdAt).toLocaleDateString('fr-FR')}
                 </p>
               </div>
               <div>
-                <p className="text-sm text-gray-600">Dernière connexion</p>
-                <p className="font-medium">
+                <p className="text-sm font-semibold text-gray-900 mb-1">Dernière connexion</p>
+                <p className="font-medium text-gray-700">
                   {authUser.lastLoginAt
                     ? new Date(authUser.lastLoginAt).toLocaleDateString('fr-FR')
                     : 'Jamais'}
                 </p>
               </div>
               <div>
-                <p className="text-sm text-gray-600">Statut</p>
+                <p className="text-sm font-semibold text-gray-900 mb-1">Statut</p>
                 <p className="font-medium">
                   <span
                     className={`inline-flex items-center px-2 py-1 rounded-full text-xs ${
@@ -242,7 +242,7 @@ export default function ProfilePage() {
 
       {/* Sécurité */}
       <div className="bg-white rounded-lg shadow p-6">
-        <h2 className="text-xl font-semibold mb-4">Sécurité</h2>
+        <h2 className="text-xl font-bold text-gray-900 mb-4">Sécurité</h2>
         <div className="space-y-3">
           <a
             href="/profile/change-password"
@@ -250,8 +250,8 @@ export default function ProfilePage() {
           >
             <div className="flex justify-between items-center">
               <div>
-                <p className="font-medium">Changer le mot de passe</p>
-                <p className="text-sm text-gray-600">
+                <p className="font-semibold text-gray-900">Changer le mot de passe</p>
+                <p className="text-sm text-gray-700">
                   Modifier votre mot de passe de connexion
                 </p>
               </div>

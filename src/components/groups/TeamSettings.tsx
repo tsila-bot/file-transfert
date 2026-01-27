@@ -115,7 +115,7 @@ export function TeamSettings({
                 value={formData.name}
                 onChange={(e) => setFormData({ ...formData, name: e.target.value })}
                 disabled={isLoading}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 text-gray-900"
               />
             </div>
 
@@ -128,7 +128,7 @@ export function TeamSettings({
                 onChange={(e) => setFormData({ ...formData, description: e.target.value })}
                 disabled={isLoading}
                 rows={3}
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 resize-none"
+                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 resize-none text-gray-900"
               />
             </div>
 
@@ -137,7 +137,7 @@ export function TeamSettings({
                 type="button"
                 onClick={() => setIsEditing(false)}
                 disabled={isLoading}
-                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition disabled:opacity-50"
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition disabled:opacity-50 text-gray-700"
               >
                 Annuler
               </button>

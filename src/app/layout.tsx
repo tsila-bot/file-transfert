@@ -4,7 +4,7 @@ import './globals.css';
 import AuthInitializer from '@/components/AuthInitializer';
 
 export const metadata: Metadata = {
-  title: 'P2P Transfer',
+  title: 'Webdevin',
   description: 'Transferts de fichiers sécurisés',
 };
 

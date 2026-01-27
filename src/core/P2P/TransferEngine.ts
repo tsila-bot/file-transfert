@@ -43,7 +43,7 @@ export class TransferEngine {
   // Configuration
   private readonly MAX_RETRIES = 3;
   private readonly RETRY_TIMEOUT = 5000;
-  private readonly MAX_CONCURRENT_CHUNKS = 4;
+  private readonly MAX_CONCURRENT_CHUNKS = 16; // Réduit de 20 à 16 - synchroniser les hashes sender/receiver
   private readonly CHUNK_SEND_INTERVAL = 0;
   private readonly MAX_CONCURRENT_TRANSFERS = 3;
 
@@ -69,42 +69,87 @@ export class TransferEngine {
     const queue = this.sendQueues.get(fileId);
     if (!queue) return;
 
+    // ✅ START: Launch retry monitoring immediately
+    this.startRetryMonitoring(fileId);
+
     try {
-      for await (const chunk of chunkGenerator) {
-        if (chunk.index === -1 && (chunk as any).metadata) {
-          // Special completion signal with final metadata
-          const finalMetadata = (chunk as any).metadata;
-          this.connection.sendMessage({
-            type: 'metadata_update',
-            data: { fileId, fileHash: finalMetadata.fileHash },
+      // ✅ BUG #3 FIX: Poll for sending when queue fills up
+      // This ensures we keep sending when producer adds chunks faster than the polling can detect
+      const sendPollingInterval = setInterval(() => {
+        const q = this.sendQueues.get(fileId);
+        if (q && q.length > 0) {
+          this.sendNextChunks(fileId);
+        }
+      }, 10); // ⚡ Reduced from 50ms to 10ms for faster response
+
+      try {
+        for await (const chunk of chunkGenerator) {
+          if (chunk.index === -1 && (chunk as any).metadata) {
+            // Special completion signal with final metadata
+            const finalMetadata = (chunk as any).metadata;
+            this.connection.sendMessage({
+              type: 'metadata_update',
+              data: { fileId, fileHash: finalMetadata.fileHash },
+            });
+            console.log(`📤 Sent metadata update with fileHash for ${fileId}`);
+            this.chunkProducersFinished.add(fileId);
+            console.log(`✅ Chunk producer finished for ${fileId}`);
+            break; // End of chunks
+          }
+
+          // Wait if queue is too full to prevent memory explosion
+          const MAX_QUEUE_SIZE = 1000; // Réduit de 1300 pour synchroniser mieux
+          while (queue.length >= MAX_QUEUE_SIZE) {
+            await new Promise(resolve => setTimeout(resolve, 2)); // ⚡ Réduit à 2ms pour réactivité maximale
+          }
+
+          queue.push({
+            chunk,
+            retries: 0,
+            lastSentAt: 0,
           });
-          console.log(`📤 Sent metadata update with fileHash for ${fileId}`);
-          this.chunkProducersFinished.add(fileId);
-          console.log(`✅ Chunk producer finished for ${fileId}`);
-          break; // End of chunks
+
+          // Trigger sending as soon as we have chunks available
+          this.sendNextChunks(fileId);
         }
-
-        // Wait if queue is too full to prevent memory explosion
-        const MAX_QUEUE_SIZE = 100; // Limit queued chunks to prevent memory issues
-        while (queue.length >= MAX_QUEUE_SIZE) {
-          await new Promise(resolve => setTimeout(resolve, 10)); // Wait 10ms
-        }
-
-        queue.push({
-          chunk,
-          retries: 0,
-          lastSentAt: 0,
-        });
-
-        // Trigger sending as soon as we have chunks available
-        this.sendNextChunks(fileId);
+      } finally {
+        clearInterval(sendPollingInterval);
       }
     } catch (error) {
       console.error(`❌ Error in chunk producer for ${fileId}:`, error);
       const transfer = this.transfers.get(fileId);
       if (transfer) {
         transfer.status = 'failed';
+        transfer.error = (error as Error).message;
         this.emitTransferUpdate(transfer);
+        
+        // ✅ Log the failed transfer (only if sender)
+        if (transfer.direction === 'send') {
+          const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
+          try {
+            const currentUser = useAuthStore.getState().user;
+            const senderName = currentUser?.name || 'Unknown';
+            const receiverName = this.connection['peerName'] || 'Unknown';
+
+            await transferAPI.logTransfer({
+              receiverId: transfer.peerId,
+              senderName,
+              receiverName,
+              fileHash: transfer.fileHash || 'unknown',
+              fileName: transfer.fileName || 'unknown',
+              fileSizeBytes: transfer.fileSize,
+              mimeType: transfer.mimeType || 'application/octet-stream',
+              transferType: 'P2P_DIRECT',
+              status: 'FAILED',
+              duration,
+              avgSpeed: 0,
+              errorCode: (error as Error).message,
+              teamId: undefined,
+            });
+          } catch (logError) {
+            console.error('Failed to log failed transfer:', logError);
+          }
+        }
       }
     }
   }
@@ -248,9 +293,21 @@ export class TransferEngine {
   /**
    * Refuser un transfert entrant
    */
-  rejectTransfer(fileId: string, reason?: string): void {
+  async rejectTransfer(fileId: string, reason?: string): Promise<void> {
     console.log(`❌ Rejecting transfer: ${fileId}`);
 
+    const transfer = this.transfers.get(fileId);
+    if (transfer) {
+      // Update local status
+      transfer.status = 'failed';
+      transfer.error = reason || 'Transfer rejected';
+      this.emitTransferUpdate(transfer);
+      
+      // ✅ No logging here - SENDER will log it when it receives the rejection message
+      // This ensures both peers see it in their history with correct senderId/receiverId
+    }
+
+    // Send rejection to peer
     this.connection.sendMessage({
       type: 'metadata',
       data: { accepted: false, fileId, reason },
@@ -282,6 +339,36 @@ export class TransferEngine {
     if (transfer) {
       transfer.status = 'cancelled';
       this.emitTransferUpdate(transfer);
+
+      // ✅ Log the cancelled transfer when sender cancels
+      if (transfer.direction === 'send') {
+        const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
+        try {
+          const currentUser = useAuthStore.getState().user;
+          const senderName = currentUser?.name || 'Unknown';
+          const receiverName = this.connection['peerName'] || 'Unknown';
+
+          transferAPI.logTransfer({
+            receiverId: transfer.peerId,
+            senderName,
+            receiverName,
+            fileHash: transfer.fileHash || 'unknown',
+            fileName: transfer.fileName || 'unknown',
+            fileSizeBytes: transfer.fileSize,
+            mimeType: transfer.mimeType || 'application/octet-stream',
+            transferType: 'P2P_DIRECT',
+            status: 'CANCELLED',
+            duration,
+            avgSpeed: 0,
+            errorCode: 'Cancelled by sender',
+            teamId: undefined,
+          }).catch((logError) => {
+            console.error('Failed to log cancelled transfer:', logError);
+          });
+        } catch (err) {
+          console.error('Error logging cancelled transfer:', err);
+        }
+      }
     }
 
     this.connection.sendMessage({
@@ -424,6 +511,38 @@ export class TransferEngine {
         transfer.status = 'failed';
         transfer.error = data.reason || 'Transfer rejected by peer';
         this.emitTransferUpdate(transfer);
+        
+        // ✅ Log the rejected transfer (SENDER logs it so both peers see it in their history)
+        if (transfer.direction === 'send') {
+          const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
+          try {
+            const currentUser = useAuthStore.getState().user;
+            const senderName = currentUser?.name || 'Unknown';
+            const receiverName = this.connection['peerName'] || 'Unknown';
+
+            const logData = {
+              receiverId: transfer.peerId,
+              senderName,
+              receiverName,
+              fileHash: transfer.fileHash || 'unknown',
+              fileName: transfer.fileName || 'unknown',
+              fileSizeBytes: transfer.fileSize,
+              mimeType: transfer.mimeType || 'application/octet-stream',
+              transferType: 'P2P_DIRECT' as const,
+              status: 'REJECTED' as const,
+              duration,
+              avgSpeed: 0,
+              errorCode: data.reason || 'Rejected by peer',
+              teamId: undefined,
+            };
+            console.log('🔴 LOGGING REJECTED TRANSFER (sender receives rejection):', logData);
+            
+            const response = await transferAPI.logTransfer(logData);
+            console.log('✅ REJECTED transfer logged response:', response);
+          } catch (logError) {
+            console.error('❌ Failed to log rejected transfer:', logError);
+          }
+        }
       }
       this.cleanupTransfer(data.fileId);
     } else if (data.cancelled === true) {
@@ -432,6 +551,34 @@ export class TransferEngine {
       if (transfer) {
         transfer.status = 'cancelled';
         this.emitTransferUpdate(transfer);
+        
+        // ✅ Log the cancelled transfer (only if sender to avoid double-logging)
+        if (transfer.direction === 'send') {
+          const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
+          try {
+            const currentUser = useAuthStore.getState().user;
+            const senderName = currentUser?.name || 'Unknown';
+            const receiverName = this.connection['peerName'] || 'Unknown';
+
+            await transferAPI.logTransfer({
+              receiverId: transfer.peerId,
+              senderName,
+              receiverName,
+              fileHash: transfer.fileHash || 'unknown',
+              fileName: transfer.fileName || 'unknown',
+              fileSizeBytes: transfer.fileSize,
+              mimeType: transfer.mimeType || 'application/octet-stream',
+              transferType: 'P2P_DIRECT',
+              status: 'CANCELLED',
+              duration,
+              avgSpeed: 0,
+              errorCode: 'Cancelled by peer',
+              teamId: undefined,
+            });
+          } catch (logError) {
+            console.error('Failed to log cancelled transfer:', logError);
+          }
+        }
       }
       this.cleanupTransfer(data.fileId);
     }
@@ -558,6 +705,7 @@ export class TransferEngine {
       }
 
       this.updateSendProgress(fileId, index);
+      // ✅ CRITICAL: Continue sending next chunks after ACK
       this.sendNextChunks(fileId);
     } else {
       console.warn(`❌ Chunk ${index} NACK received, scheduling retry...`);
@@ -565,14 +713,14 @@ export class TransferEngine {
       if (inFlight) {
         inFlight.delete(index);
       }
-      this.retryChunk(fileId, index);
+      this.retryChunk(fileId, index).catch(err => console.error('Retry failed:', err));
     }
   }
 
   /**
    * Retry d'un chunk qui a échoué
    */
-  private retryChunk(fileId: string, chunkIndex: number): void {
+  private async retryChunk(fileId: string, chunkIndex: number): Promise<void> {
     const queue = this.sendQueues.get(fileId);
     if (!queue) return;
 
@@ -591,6 +739,34 @@ export class TransferEngine {
         transfer.status = 'failed';
         transfer.error = `Chunk ${chunkIndex} failed after ${this.MAX_RETRIES} retries`;
         this.emitTransferUpdate(transfer);
+        
+        // ✅ Log the failed transfer (only if sender)
+        if (transfer.direction === 'send') {
+          const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
+          try {
+            const currentUser = useAuthStore.getState().user;
+            const senderName = currentUser?.name || 'Unknown';
+            const receiverName = this.connection['peerName'] || 'Unknown';
+
+            await transferAPI.logTransfer({
+              receiverId: transfer.peerId,
+              senderName,
+              receiverName,
+              fileHash: transfer.fileHash || 'unknown',
+              fileName: transfer.fileName || 'unknown',
+              fileSizeBytes: transfer.fileSize,
+              mimeType: transfer.mimeType || 'application/octet-stream',
+              transferType: 'P2P_DIRECT',
+              status: 'FAILED',
+              duration,
+              avgSpeed: 0,
+              errorCode: `Chunk ${chunkIndex} failed after ${this.MAX_RETRIES} retries`,
+              teamId: undefined,
+            });
+          } catch (logError) {
+            console.error('Failed to log failed transfer:', logError);
+          }
+        }
       }
 
       this.cleanupTransfer(fileId);
@@ -683,9 +859,9 @@ export class TransferEngine {
       return;
     }
 
-    // schedule sends with small stagger to avoid bursts
-    chunksToSend.forEach((chunkToSend, idx) => {
-      setTimeout(() => this.sendChunk(fileId, chunkToSend), idx * this.CHUNK_SEND_INTERVAL);
+    // ⚡ Send all chunks immediately (CHUNK_SEND_INTERVAL = 0, no stagger needed)
+    chunksToSend.forEach((chunkToSend) => {
+      this.sendChunk(fileId, chunkToSend);
     });
   }
 
@@ -713,7 +889,7 @@ export class TransferEngine {
       // Validate chunk data integrity before sending
       if (!chunk.data || chunk.data.byteLength === 0) {
         console.error(`❌ Invalid chunk data for chunk ${chunk.index}`);
-        this.retryChunk(fileId, chunk.index);
+        this.retryChunk(fileId, chunk.index).catch(err => console.error('Retry failed:', err));
         return;
       }
 
@@ -914,32 +1090,35 @@ export class TransferEngine {
       transfer.error = (error as Error).message;
       this.emitTransferUpdate(transfer);
       
-      // Log the failed transfer (only if sender to avoid double-logging)
-      if (transfer.direction === 'send') {
-        const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
-        try {
-          const currentUser = useAuthStore.getState().user;
-          const senderName = currentUser?.name || 'Unknown';
-          const receiverName = this.connection['peerName'] || 'Unknown';
+      // ✅ Log the failed transfer (both SENDER and RECEIVER need to log)
+      const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
+      try {
+        const currentUser = useAuthStore.getState().user;
+        const currentUserName = currentUser?.name || 'Unknown';
+        const peerName = this.connection['peerName'] || 'Unknown';
+        
+        // Correct sender/receiver names based on transfer direction
+        const senderName = transfer.direction === 'send' ? currentUserName : peerName;
+        const receiverName = transfer.direction === 'send' ? peerName : currentUserName;
+        const receiverId = transfer.direction === 'send' ? transfer.peerId : currentUser?.id || 'unknown';
 
-          await transferAPI.logTransfer({
-            receiverId: transfer.peerId,
-            senderName,
-            receiverName,
-            fileHash: transfer.fileHash || 'unknown',
-            fileName: transfer.fileName || 'unknown',
-            fileSizeBytes: transfer.fileSize,
-            mimeType: transfer.mimeType || 'application/octet-stream',
-            transferType: 'P2P_DIRECT',
-            status: 'FAILED',
-            duration,
-            avgSpeed: 0,
-            errorCode: (error as Error).message,
-            teamId: undefined,
-          });
-        } catch (logError) {
-          console.error('Failed to log failed transfer:', logError);
-        }
+        await transferAPI.logTransfer({
+          receiverId,
+          senderName,
+          receiverName,
+          fileHash: transfer.fileHash || 'unknown',
+          fileName: transfer.fileName || 'unknown',
+          fileSizeBytes: transfer.fileSize,
+          mimeType: transfer.mimeType || 'application/octet-stream',
+          transferType: 'P2P_DIRECT',
+          status: 'FAILED',
+          duration,
+          avgSpeed: 0,
+          errorCode: (error as Error).message,
+          teamId: undefined,
+        });
+      } catch (logError) {
+        console.error('Failed to log failed transfer:', logError);
       }
     }
   }
@@ -1002,14 +1181,54 @@ export class TransferEngine {
   destroy(): void {
     console.log('🔥 Destroying TransferEngine');
 
+    const logPromises: Promise<any>[] = [];
+    
     for (const [fileId, transfer] of this.transfers) {
       if (transfer.status === 'active' || transfer.status === 'pending') {
         transfer.status = 'cancelled';
         transfer.error = 'Connection closed';
         this.emitTransferUpdate(transfer);
+        
+        // ✅ Log the cancelled transfer
+        const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
+        const logPromise = (async () => {
+          try {
+            const currentUser = useAuthStore.getState().user;
+            const currentUserName = currentUser?.name || 'Unknown';
+            const peerName = this.connection['peerName'] || 'Unknown';
+            
+            // Correct sender/receiver names based on transfer direction
+            const senderName = transfer.direction === 'send' ? currentUserName : peerName;
+            const receiverName = transfer.direction === 'send' ? peerName : currentUserName;
+            const receiverId = transfer.direction === 'send' ? transfer.peerId : currentUser?.id || 'unknown';
+
+            await transferAPI.logTransfer({
+              receiverId,
+              senderName,
+              receiverName,
+              fileHash: transfer.fileHash || 'unknown',
+              fileName: transfer.fileName || 'unknown',
+              fileSizeBytes: transfer.fileSize,
+              mimeType: transfer.mimeType || 'application/octet-stream',
+              transferType: 'P2P_DIRECT',
+              status: 'CANCELLED',
+              duration,
+              avgSpeed: 0,
+              errorCode: 'Connection closed',
+              teamId: undefined,
+            });
+            console.log(`✅ Logged cancelled transfer: ${fileId}`);
+          } catch (logError) {
+            console.error(`Failed to log cancelled transfer ${fileId}:`, logError);
+          }
+        })();
+        logPromises.push(logPromise);
       }
       this.cleanupTransfer(fileId);
     }
+
+    // Wait for all logging to complete before clearing transfers
+    Promise.all(logPromises).catch(err => console.error('Error logging cancelled transfers:', err));
 
     this.transfers.clear();
     this.chunkManagers.clear();

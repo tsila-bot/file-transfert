@@ -62,12 +62,43 @@ export class WorkerPool {
             const id = `task_${this.taskIdCounter++}`;
             const task: Task = { id, type, data, resolve, reject };
 
+            // ✅ OPTIMIZED: Adaptive timeout based on data size and queue length
+            // Larger data = more time needed. Longer queue = more time needed
+            const basePriority = type === 'compress' ? 100000 : 60000; // ms
+            const adaptiveTimeout = basePriority + (this.taskQueue.length * 1000); // +1s per queued task
+            const finalTimeout = Math.min(adaptiveTimeout, 300000); // Cap at 5 minutes max
+
+            const timeoutId = setTimeout(() => {
+                if (this.pendingTasks.has(id)) {
+                    console.error(`⏱️ Worker task timeout: ${type} - ${id} (waited ${finalTimeout}ms, queue: ${this.taskQueue.length}, available: ${this.availableWorkers.size})`);
+                    this.pendingTasks.delete(id);
+                    reject(new Error(`Worker task timeout after ${finalTimeout}ms: ${type}`));
+                    this.processQueue();
+                }
+            }, finalTimeout);
+
+            const wrappedResolve = (result: ArrayBuffer) => {
+                clearTimeout(timeoutId);
+                resolve(result);
+            };
+
+            const wrappedReject = (error: Error) => {
+                clearTimeout(timeoutId);
+                reject(error);
+            };
+
+            const wrappedTask = { ...task, resolve: wrappedResolve, reject: wrappedReject };
+
             const worker = this.getAvailableWorker();
 
             if (worker) {
-                this.assignTaskToWorker(worker, task);
+                this.assignTaskToWorker(worker, wrappedTask);
             } else {
-                this.taskQueue.push(task);
+                this.taskQueue.push(wrappedTask);
+                // Log queue pressure
+                if (this.taskQueue.length % 10 === 0) {
+                    console.warn(`⚠️ WorkerPool queue growing: ${this.taskQueue.length} tasks pending (${this.availableWorkers.size}/${this.workers.length} workers available)`);
+                }
             }
         });
     }
@@ -85,9 +116,11 @@ export class WorkerPool {
         this.pendingTasks.set(task.id, task);
 
         try {
+            // ✅ CRITICAL FIX: Copy buffer before transferring to prevent detachment of original
+            const dataCopy = task.data.slice(0);  // Create a copy
             worker.postMessage(
-                { id: task.id, type: task.type, data: task.data },
-                [task.data]
+                { id: task.id, type: task.type, data: dataCopy },
+                [dataCopy]  // Transfer the COPY, not the original
             );
         } catch (error) {
             this.pendingTasks.delete(task.id);

@@ -193,7 +193,7 @@ export default function TeamsPage() {
                   placeholder="Ex: ABC123"
                   disabled={joinLoading}
                   maxLength={10}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 font-mono"
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 font-mono text-gray-900"
                 />
               </div>
 
@@ -202,7 +202,7 @@ export default function TeamsPage() {
                   type="button"
                   onClick={() => setShowJoinModal(false)}
                   disabled={joinLoading}
-                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition disabled:opacity-50"
+                  className="flex-1 px-4 py-2 border border-gray-300 rounded-lg hover:bg-gray-50 transition disabled:opacity-50 text-gray-700"
                 >
                   Annuler
                 </button>

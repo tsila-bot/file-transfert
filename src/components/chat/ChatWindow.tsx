@@ -148,6 +148,18 @@ export default function ChatWindow() {
     return cleanup;
   }, [selectedConversation, socket, authStore.user?.id]);
 
+  // 🆕 Notifier le backend quand on quitte une conversation
+  useEffect(() => {
+    return () => {
+      if (selectedConversation && socket.isConnected()) {
+        socket.emit('chat:close_conversation', {
+          conversationId: selectedConversation,
+        });
+        console.log('👋 Conversation fermée:', selectedConversation);
+      }
+    };
+  }, [selectedConversation, socket]);
+
   // Écouter l'événement de messages marqués comme lus (pour mettre à jour le dashboard)
   useEffect(() => {
     const cleanup = socket.on('chat:messages_marked_as_read', (data: any) => {
@@ -230,8 +242,13 @@ export default function ChatWindow() {
       )
     );
 
-    // ✅ NOUVEAU: Notifier le backend que les messages ont été vus
-    // Cela permettra au dashboard de recevoir la mise à jour en temps réel
+    // 🆕 Notifier le backend que l'utilisateur ouvre cette conversation
+    // Le backend marquera automatiquement les messages reçus comme lus
+    socket.emit('chat:open_conversation', {
+      conversationId: conversationId,
+    });
+
+    // ✅ ANCIEN: Notifier le backend que les messages ont été vus
     socket.emit('chat:mark_conversation_read', {
       conversationId: conversationId,
     });

@@ -80,7 +80,7 @@ export function TeamModal({
               onChange={(e) => setFormData({ ...formData, name: e.target.value })}
               placeholder="Ex: Équipe Marketing"
               disabled={isLoading}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 text-gray-900"
             />
           </div>
 
@@ -94,7 +94,7 @@ export function TeamModal({
               placeholder="Décrivez le but de votre équipe..."
               rows={3}
               disabled={isLoading}
-              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 resize-none"
+              className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 disabled:bg-gray-50 resize-none text-gray-900"
             />
           </div>
 

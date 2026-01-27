@@ -60,7 +60,7 @@ export function Sidebar() {
             <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center">
               <Share2 size={20} className="text-white" />
             </div>
-            <span>Tsilavina</span>
+            <span>Webdevin</span>
           </h1>
           <p className="text-xs text-gray-400 mt-1">P2P Transfer & Chat</p>
         </div>

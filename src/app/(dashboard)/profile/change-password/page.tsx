@@ -129,7 +129,7 @@ export default function ChangePasswordPage() {
       </div>
 
       <div className="bg-white rounded-lg shadow p-8">
-        <h1 className="text-2xl font-bold mb-6">Changer le mot de passe</h1>
+        <h1 className="text-2xl font-bold text-gray-900 mb-6">Changer le mot de passe</h1>
 
         {error && (
           <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-600 rounded-md">
@@ -140,7 +140,7 @@ export default function ChangePasswordPage() {
         <form onSubmit={handleSubmit} className="space-y-4">
           {/* Mot de passe actuel */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-semibold text-gray-900 mb-1">
               Mot de passe actuel
             </label>
             <div className="relative">
@@ -150,7 +150,7 @@ export default function ChangePasswordPage() {
                 value={formData.currentPassword}
                 onChange={handleChange}
                 required
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 placeholder-gray-400"
               />
               <button
                 type="button"
@@ -169,7 +169,7 @@ export default function ChangePasswordPage() {
 
           {/* Nouveau mot de passe */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-semibold text-gray-900 mb-1">
               Nouveau mot de passe
             </label>
             <div className="relative">
@@ -179,7 +179,7 @@ export default function ChangePasswordPage() {
                 value={formData.newPassword}
                 onChange={handleChange}
                 required
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 placeholder-gray-400"
               />
               <button
                 type="button"
@@ -198,7 +198,7 @@ export default function ChangePasswordPage() {
             {/* Exigences du mot de passe */}
             {formData.newPassword && passwordErrors.length > 0 && (
               <div className="mt-2 text-sm">
-                <p className="text-gray-600 mb-1">Requis :</p>
+                <p className="text-gray-900 font-medium mb-1">Requis :</p>
                 <ul className="space-y-1">
                   {passwordErrors.map((err, index) => (
                     <li key={index} className="text-red-600 flex items-center">
@@ -213,7 +213,7 @@ export default function ChangePasswordPage() {
 
           {/* Confirmer le mot de passe */}
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">
+            <label className="block text-sm font-semibold text-gray-900 mb-1">
               Confirmer le nouveau mot de passe
             </label>
             <div className="relative">
@@ -223,7 +223,7 @@ export default function ChangePasswordPage() {
                 value={formData.confirmPassword}
                 onChange={handleChange}
                 required
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 placeholder-gray-400"
               />
               <button
                 type="button"
@@ -253,8 +253,8 @@ export default function ChangePasswordPage() {
         </form>
 
         <div className="mt-6 pt-6 border-t">
-          <p className="text-sm text-gray-600">
-            💡 <strong>Astuce :</strong> Utilisez un gestionnaire de mots de passe
+          <p className="text-sm text-gray-700">
+            💡 <strong className="text-gray-900">Astuce :</strong> Utilisez un gestionnaire de mots de passe
             pour créer et stocker des mots de passe forts.
           </p>
         </div>

@@ -47,7 +47,7 @@ export interface TransferHistoryItem {
   fileSizeBytes: number
   mimeType: string;
   transferType: 'P2P_DIRECT' | 'P2P_MULTI_SOURCE' | 'PUBLIC_LINK' | 'GROUP_TRANSFER';
-  status: 'SUCCESS' | 'FAILED' | 'PARTIAL' | 'CANCELLED';
+  status: 'SUCCESS' | 'FAILED' | 'PARTIAL' | 'CANCELLED' | 'REJECTED';
   duration?: number;
   avgSpeed?: number;
   errorCode?: string;
@@ -142,7 +142,7 @@ export const transferAPI = {
     fileSizeBytes: number;
     mimeType: string;
     transferType: 'P2P_DIRECT' | 'P2P_MULTI_SOURCE' | 'PUBLIC_LINK' | 'GROUP_TRANSFER';
-    status: 'SUCCESS' | 'FAILED' | 'PARTIAL' | 'CANCELLED';
+    status: 'SUCCESS' | 'FAILED' | 'PARTIAL' | 'CANCELLED' | 'REJECTED';
     duration: number; // en secondes
     avgSpeed: number; // en Mbps
     errorCode?: string;

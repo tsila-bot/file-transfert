@@ -9,7 +9,7 @@ import { transferLinkAPI, TransferLink } from '@/core/services/api/transferLink.
 
 export default function PublicLinkPage() {
   const params = useParams();
-  const shortCode = params.shortCode as string;
+  const shortCode = (params?.shortCode as string) || '';
   
   const [linkInfo, setLinkInfo] = useState<TransferLink | null>(null);
   const [loading, setLoading] = useState(true);
@@ -192,7 +192,7 @@ export default function PublicLinkPage() {
               <div className="mb-8 p-6 border-2 border-yellow-200 bg-yellow-50 rounded-lg">
                 <div className="flex items-center gap-2 mb-4">
                   <Lock className="w-5 h-5 text-yellow-600" />
-                  <h2 className="text-lg font-semibold text-yellow-900">
+                  <h2 className="text-lg font-bold text-yellow-900">
                     Ce lien est protégé par mot de passe
                   </h2>
                 </div>
@@ -204,7 +204,7 @@ export default function PublicLinkPage() {
                       placeholder="Entrez le mot de passe"
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
-                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 placeholder-gray-500"
                     />
                   </div>
 
@@ -214,7 +214,7 @@ export default function PublicLinkPage() {
 
                   <button
                     type="submit"
-                    className="w-full bg-blue-500 hover:bg-blue-600 text-white font-medium py-2 px-4 rounded-lg transition"
+                    className="w-full bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg transition"
                   >
                     Vérifier
                   </button>

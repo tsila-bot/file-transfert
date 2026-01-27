@@ -22,7 +22,7 @@ interface TransferLinkData {
 
 export default function PublicTransferPage() {
   const params = useParams()
-  const code = params.code as string
+  const code = (params?.code as string) || ''
 
   const [link, setLink] = useState<TransferLinkData | null>(null)
   const [loading, setLoading] = useState(true)
@@ -126,7 +126,7 @@ export default function PublicTransferPage() {
 
   if (error && !link) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-red-50 via-orange-50 to-yellow-50 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-linear-to-br from-red-50 via-orange-50 to-yellow-50 flex items-center justify-center p-4">
         <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full border-t-4 border-red-500">
           <div className="flex justify-center mb-6">
             <div className="bg-red-100 rounded-full p-4">
@@ -137,7 +137,7 @@ export default function PublicTransferPage() {
           <p className="text-gray-600 text-center mb-8 leading-relaxed">{error}</p>
           <a
             href="/"
-            className="block w-full px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl text-center font-semibold transition-all transform hover:scale-105 shadow-lg"
+            className="block w-full px-6 py-3 bg-linear-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl text-center font-semibold transition-all transform hover:scale-105 shadow-lg"
           >
             Retour à l'accueil
           </a>
@@ -148,7 +148,7 @@ export default function PublicTransferPage() {
 
   if (!link) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+      <div className="min-h-screen bg-linear-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
         <p className="text-gray-600 text-lg">Lien introuvable</p>
       </div>
     )
@@ -157,7 +157,7 @@ export default function PublicTransferPage() {
   // Si protégé par mot de passe et non vérifié
   if (isProtected && !verified) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-linear-to-br from-blue-50 via-indigo-50 to-purple-50 flex items-center justify-center p-4">
         <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full border-t-4 border-blue-500">
           <div className="flex justify-center mb-6">
             <div className="bg-blue-100 rounded-full p-4 animate-pulse">
@@ -218,7 +218,7 @@ export default function PublicTransferPage() {
             <button
               type="submit"
               disabled={verifying || !password.trim()}
-              className="w-full px-6 py-3 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl font-semibold transition-all transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2 shadow-lg"
+              className="w-full px-6 py-3 bg-linear-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white rounded-xl font-semibold transition-all transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-2 shadow-lg"
             >
               {verifying ? (
                 <>
@@ -250,7 +250,7 @@ export default function PublicTransferPage() {
 
   // Page de téléchargement
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-linear-to-br from-blue-50 via-indigo-50 to-purple-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-lg w-full border-t-4 border-green-500">
         {/* Header */}
         <div className="text-center mb-8">
@@ -265,7 +265,7 @@ export default function PublicTransferPage() {
         </div>
 
         {/* Infos du fichier */}
-        <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-6 mb-6 border border-blue-100">
+        <div className="bg-linear-to-br from-blue-50 to-indigo-50 rounded-xl p-6 mb-6 border border-blue-100">
           <div className="flex items-start gap-4 mb-4">
             <div className="text-4xl">{getFileIcon(link.fileMimeType)}</div>
             <div className="flex-1 min-w-0">
@@ -336,7 +336,7 @@ export default function PublicTransferPage() {
         <button
           onClick={handleDownload}
           disabled={!canDownload || downloading}
-          className="w-full px-6 py-4 bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white rounded-xl font-bold text-lg transition-all transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-3 shadow-xl"
+          className="w-full px-6 py-4 bg-linear-to-r from-green-600 to-emerald-600 hover:from-green-700 hover:to-emerald-700 text-white rounded-xl font-bold text-lg transition-all transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed disabled:transform-none flex items-center justify-center gap-3 shadow-xl"
         >
           {downloading ? (
             <>
@@ -360,7 +360,7 @@ export default function PublicTransferPage() {
         </div>
 
         {/* Info P2P */}
-        <div className="mt-6 p-4 bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl border border-green-200">
+        <div className="mt-6 p-4 bg-linear-to-r from-green-50 to-emerald-50 rounded-xl border border-green-200">
           <p className="text-xs text-center text-gray-700 leading-relaxed">
             <strong className="text-green-700">🔒 Transfert sécurisé P2P</strong>
             <br />

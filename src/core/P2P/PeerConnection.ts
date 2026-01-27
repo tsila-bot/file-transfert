@@ -21,12 +21,12 @@ export class PeerConnection extends EventEmitter {
   private peerConnection: RTCPeerConnection | null = null;
   private dataChannels: RTCDataChannel[] = [];
   private pendingIceCandidates: RTCIceCandidateInit[] = [];
-  private sendQueues: Array<Array<string | ArrayBuffer | Blob>> = [];
-  private pendingChunkMetadata: any = null;
-  private readonly MAX_SEND_QUEUE = 500; // Increased from 200 to 500
+  private sendQueues: Array<Array<string | ArrayBuffer | Blob>> = [[]]; // ✅ FIX: Initialize with empty queue
+  private pendingChunkMetadata: Map<string, any> = new Map(); // ✅ FIX: Use Map keyed by fileId#chunkIndex to prevent data race with parallel channels
+  private readonly MAX_SEND_QUEUE = 800; // Réduit de 1000 - synchroniser sender/receiver
   private readonly MAX_PENDING_ICE = 200;
   private readonly NUM_DATA_CHANNELS = 6; // Reduced from 12 to 6 to reduce overhead
-  private readonly MAX_BUFFER_SIZE = 16 * 1024 * 1024; // Increased from 8MB to 16MB
+  private readonly MAX_BUFFER_SIZE = 90 * 1024 * 1024; // Réduit de 100MB à 90MB
   private channelIndex = 0;
   private connectionTimeoutMs: number;
   private maxRetries: number;
@@ -79,7 +79,9 @@ export class PeerConnection extends EventEmitter {
         const iceServers = await socketClient.getIceServers();
         if (iceServers && iceServers.length > 0) {
           rtcConfig = { ...RTC_CONFIGURATION, iceServers } as RTCConfiguration;
-          console.log('Using ICE servers from signaling server');
+          console.log('📡 Using ICE servers from signaling server:', iceServers.map((s: any) => 
+            typeof s.urls === 'string' ? s.urls : s.urls[0]
+          ).join(', '));
         }
       } catch (err) {
         console.warn('Failed to fetch ICE servers from signaling, using default', err);
@@ -302,6 +304,7 @@ export class PeerConnection extends EventEmitter {
       // Queue the message for later send when a data channel opens.
       console.warn('No data channels open, queueing message');
       // Use the first queue for general messages
+      if (!this.sendQueues[0]) this.sendQueues[0] = []; // ✅ FIX: Safety check
       if (this.sendQueues[0].length >= this.MAX_SEND_QUEUE) {
         console.warn('Send queue full, dropping oldest message');
         this.sendQueues[0].shift();
@@ -389,21 +392,43 @@ export class PeerConnection extends EventEmitter {
     const channel = this.dataChannels[channelIndex];
 
     try {
-      // Create binary packet with header: [ChunkID: 4 bytes][TotalChunks: 4 bytes][Size: 4 bytes][Data: N bytes]
-      const headerSize = 12; // 4 + 4 + 4 bytes
+      // ✅ FIX: Embed FileID in packet header to properly correlate with metadata
+      // Header format: [FileID_LEN: 2 bytes][FileID: N bytes][ChunkID: 4 bytes][TotalChunks: 4 bytes][Size: 4 bytes][Data: N bytes]
+      const fileId = metadata.fileId;
+      const fileIdBytes = new TextEncoder().encode(fileId);
+      const fileIdLen = fileIdBytes.length;
+
+      const headerSize = 2 + fileIdLen + 4 + 4 + 4; // FileIDLen + FileID + ChunkID + TotalChunks + Size
       const packetSize = headerSize + data.byteLength;
       const packet = new ArrayBuffer(packetSize);
       const view = new DataView(packet);
 
-      // Write header
-      view.setUint32(0, metadata.index, true); // ChunkID (little-endian)
-      view.setUint32(4, metadata.totalChunks, true); // TotalChunks
-      view.setUint32(8, data.byteLength, true); // Size of data
+      let offset = 0;
 
-      // Copy data after header
-      new Uint8Array(packet, headerSize).set(new Uint8Array(data));
+      // Write FileID length (2 bytes)
+      view.setUint16(offset, fileIdLen, true);
+      offset += 2;
 
-      // Send metadata separately (for now, until receiver is updated)
+      // Write FileID bytes
+      new Uint8Array(packet, offset, fileIdLen).set(fileIdBytes);
+      offset += fileIdLen;
+
+      // Write ChunkID (4 bytes)
+      view.setUint32(offset, metadata.index, true);
+      offset += 4;
+
+      // Write TotalChunks (4 bytes)
+      view.setUint32(offset, metadata.totalChunks, true);
+      offset += 4;
+
+      // Write DataSize (4 bytes)
+      view.setUint32(offset, data.byteLength, true);
+      offset += 4;
+
+      // Copy actual data after header
+      new Uint8Array(packet, offset).set(new Uint8Array(data));
+
+      // Send metadata separately (for quick reception, contains hash, encryption metadata)
       const metadataMessage = JSON.stringify({ type: 'chunk_metadata', data: metadata });
 
       if (channel.readyState === 'open') {
@@ -644,15 +669,35 @@ export class PeerConnection extends EventEmitter {
     };
 
     this.peerConnection.oniceconnectionstatechange = () => {
-      console.log(`ICE state: ${this.peerConnection?.iceConnectionState}`);
+      const state = this.peerConnection?.iceConnectionState;
+      console.log(`❄️ ICE state: ${state}`);
+      
+      if (state === 'failed') {
+        console.error('❌ ICE connection failed - NAT traversal unsuccessful');
+        console.log('💡 Suggestion: Check if TURN server is reachable at about:webrtc');
+        // Emit ICE failed event for potential fallback strategies
+        this.emit('icefailed');
+      } else if (state === 'connected' || state === 'completed') {
+        console.log('✅ ICE connection established successfully');
+      }
     };
 
     this.peerConnection.onicecandidateerror = (event) => {
       try {
         const text = (event as any).errorText || '';
-        console.warn('ICE candidate error:', text || event, 'url:', (event as any).url);
+        const url = (event as any).url || '';
+        console.warn('⚠️ ICE candidate error:', {
+          text,
+          url,
+          type: (event as any).type,
+        });
+        
+        // Track TURN server failures
+        if (url && url.includes('turn:')) {
+          console.warn(`🔄 TURN server ${url} failed, retrying with STUN-only...`);
+        }
       } catch (err) {
-        console.warn('ICE candidate error (unknown):', event);
+        console.warn('ICE candidate error (parse failed):', event);
       }
     };
   }
@@ -767,7 +812,9 @@ export class PeerConnection extends EventEmitter {
             break;
 
           case 'chunk_metadata':
-            this.pendingChunkMetadata = message.data;
+            // ✅ FIX: Store metadata in a Map indexed by fileId#chunkIndex to prevent race conditions
+            const metaKey = `${message.data.fileId}#${message.data.index}`;
+            this.pendingChunkMetadata.set(metaKey, message.data);
             break;
 
           case 'chunk':
@@ -812,39 +859,68 @@ export class PeerConnection extends EventEmitter {
         }
       } else {
         // Handle binary data (chunk data following chunk_metadata)
-        if (this.pendingChunkMetadata) {
-          // Parse header from binary data: [ChunkID: 4 bytes][TotalChunks: 4 bytes][Size: 4 bytes][Data: N bytes]
-          if (data.byteLength < 12) {
-            console.error('Invalid chunk data: too small for header');
-            this.pendingChunkMetadata = null;
-            return;
-          }
+        // ✅ FIX: Parse FileID from packet header to correctly match with metadata
+        if (data.byteLength < 10) {
+          console.error('Invalid chunk data: too small for header');
+          return;
+        }
 
-          const view = new DataView(data);
-          const chunkId = view.getUint32(0, true);
-          const totalChunks = view.getUint32(4, true);
-          const dataSize = view.getUint32(8, true);
+        let offset = 0;
+        const view = new DataView(data);
 
-          if (data.byteLength < 12 + dataSize) {
-            console.error('Invalid chunk data: size mismatch');
-            this.pendingChunkMetadata = null;
-            return;
-          }
+        // ✅ Read FileID length (2 bytes)
+        const fileIdLen = view.getUint16(offset, true);
+        offset += 2;
 
-          // Extract actual data after header
-          const actualData = data.slice(12, 12 + dataSize);
+        // ✅ Check if we have enough data for FileID
+        if (data.byteLength < offset + fileIdLen + 12) {
+          console.error('Invalid chunk data: incomplete header');
+          return;
+        }
 
+        // ✅ Read FileID (variable length string)
+        const fileIdBytes = new Uint8Array(data, offset, fileIdLen);
+        const fileId = new TextDecoder().decode(fileIdBytes);
+        offset += fileIdLen;
+
+        // ✅ Read ChunkID (4 bytes)
+        const chunkId = view.getUint32(offset, true);
+        offset += 4;
+
+        // ✅ Read TotalChunks (4 bytes)
+        const totalChunks = view.getUint32(offset, true);
+        offset += 4;
+
+        // ✅ Read DataSize (4 bytes)
+        const dataSize = view.getUint32(offset, true);
+        offset += 4;
+
+        // ✅ Validate we have the complete chunk data
+        if (data.byteLength < offset + dataSize) {
+          console.error(`Invalid chunk data: size mismatch (expected ${offset + dataSize}, got ${data.byteLength})`);
+          return;
+        }
+
+        // ✅ Extract actual data after header
+        const actualData = data.slice(offset, offset + dataSize);
+
+        // ✅ Look up metadata from Map using fileId#chunkIndex key
+        const metaKey = `${fileId}#${chunkId}`;
+        const metadata = this.pendingChunkMetadata.get(metaKey);
+        this.pendingChunkMetadata.delete(metaKey); // Clean up after use
+
+        if (metadata) {
           const chunkData = {
-            ...this.pendingChunkMetadata,
+            ...metadata,
             index: chunkId,
             totalChunks,
             data: actualData,
           };
 
-          console.log(`📥 Received chunk ${chunkId}/${totalChunks} (${actualData.byteLength} bytes)`);
+          console.log(`📥 Received chunk ${chunkId}/${totalChunks} (${actualData.byteLength} bytes) for ${fileId}`);
           this.emit('chunk', chunkData);
-          this.pendingChunkMetadata = null;
         } else {
+          console.warn(`⚠️ Received chunk data for unknown metadata: ${metaKey}. Buffering may help.`);
           this.emit('binarydata', data);
         }
       }

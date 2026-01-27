@@ -28,8 +28,9 @@ self.onmessage = async (e: MessageEvent<WorkerMessage>) => {
             });
 
             const response: WorkerResponse = { id, result: compressed.buffer };
-            // Syntaxe correcte avec l'objet transfer
-            self.postMessage(response, { transfer: [compressed.buffer] });
+            // ✅ BUG #7 FIX: DON'T transfer buffer back - just send it (copy instead)
+            // Transferring causes detached ArrayBuffer errors
+            self.postMessage(response);
 
         } else if (type === 'decompress') {
             const decompressed = await new Promise<Uint8Array>((resolve, reject) => {
@@ -40,8 +41,9 @@ self.onmessage = async (e: MessageEvent<WorkerMessage>) => {
             });
 
             const response: WorkerResponse = { id, result: decompressed.buffer };
-            // Syntaxe correcte avec l'objet transfer
-            self.postMessage(response, { transfer: [decompressed.buffer] });
+            // ✅ BUG #7 FIX: DON'T transfer buffer back - just send it (copy instead)
+            // Transferring causes detached ArrayBuffer errors
+            self.postMessage(response);
         }
     } catch (error) {
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';

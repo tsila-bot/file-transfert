@@ -134,7 +134,8 @@ export class EncryptionManager {
     key: CryptoKey,
     metadata: EncryptionMetadata
   ): Promise<ArrayBuffer> {
-    console.log(`🔓 Decrypting ${encryptedData.byteLength} bytes...`);
+    // Suppress verbose logging during bulk operations
+    // console.log(`🔓 Decrypting ${encryptedData.byteLength} bytes...`);
 
     // Décoder l'IV
     const iv = this.base64ToArrayBuffer(metadata.iv);
@@ -150,7 +151,8 @@ export class EncryptionManager {
         encryptedData
       );
 
-      console.log(`✅ Decrypted successfully (${decryptedBuffer.byteLength} bytes)`);
+      // Suppress verbose logging
+      // console.log(`✅ Decrypted successfully (${decryptedBuffer.byteLength} bytes)`);
 
       return decryptedBuffer;
     } catch (error) {
