@@ -2,8 +2,8 @@
 
 export const ENV = {
   // API
-  API_URL: process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000',
-  WS_URL: process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:4000',
+  API_URL: 'https://appwebp2pbackend.onrender.com',
+  WS_URL: 'https://appwebp2pbackend.onrender.com',
 
   // WebRTC
   STUN_SERVERS: (process.env.NEXT_PUBLIC_STUN_SERVERS ?? '')
