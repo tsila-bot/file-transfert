@@ -2,42 +2,38 @@
 
 export const ENV = {
   // API
-  API_URL: process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000',
-  WS_URL: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:4000',
+  API_URL: process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:4000',
+  WS_URL: process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:4000',
 
   // WebRTC
-  STUN_SERVERS: (process.env.NEXT_PUBLIC_STUN_SERVERS || '')
+  STUN_SERVERS: (process.env.NEXT_PUBLIC_STUN_SERVERS ?? '')
     .split(',')
     .map((url) => url.trim())
-    .filter((url) => url.length > 0)
+    .filter(Boolean)
     .map((url) => ({ urls: url })),
+
   TURN_SERVER: process.env.NEXT_PUBLIC_TURN_URL
     ? {
-      urls: process.env.NEXT_PUBLIC_TURN_URL,
-      username: process.env.NEXT_PUBLIC_TURN_USERNAME,
-      credential: process.env.NEXT_PUBLIC_TURN_PASSWORD,
-    }
+        urls: process.env.NEXT_PUBLIC_TURN_URL,
+        username: process.env.NEXT_PUBLIC_TURN_USERNAME,
+        credential: process.env.NEXT_PUBLIC_TURN_PASSWORD,
+      }
     : null,
-
 
   // Feature Flags
   FEATURES: {
-    cloudIntegrations:
-      process.env.NEXT_PUBLIC_ENABLE_CLOUD_INTEGRATIONS === 'true',
+    cloudIntegrations: process.env.NEXT_PUBLIC_ENABLE_CLOUD_INTEGRATIONS === 'true',
     videoCall: process.env.NEXT_PUBLIC_ENABLE_VIDEO_CALL === 'true',
-    multiSourceTransfer:
-      process.env.NEXT_PUBLIC_ENABLE_MULTI_SOURCE_TRANSFER === 'true',
+    multiSourceTransfer: process.env.NEXT_PUBLIC_ENABLE_MULTI_SOURCE_TRANSFER === 'true',
     publicLinks: process.env.NEXT_PUBLIC_ENABLE_PUBLIC_LINKS === 'true',
   },
 
   // App Config
   APP: {
-    name: process.env.NEXT_PUBLIC_APP_NAME || 'APPWEBP2P',
-    version: process.env.NEXT_PUBLIC_APP_VERSION || '1.0.0',
-    maxFileSize: parseInt(
-      process.env.NEXT_PUBLIC_MAX_FILE_SIZE || '5368709120'
-    ), // 5 GB
-    chunkSize: parseInt(process.env.NEXT_PUBLIC_CHUNK_SIZE || '1048576'), // 1 MB
+    name: process.env.NEXT_PUBLIC_APP_NAME ?? 'APPWEBP2P',
+    version: process.env.NEXT_PUBLIC_APP_VERSION ?? '1.0.0',
+    maxFileSize: Number(process.env.NEXT_PUBLIC_MAX_FILE_SIZE ?? '5368709120'), // 5 GB
+    chunkSize: Number(process.env.NEXT_PUBLIC_CHUNK_SIZE ?? '1048576'), // 1 MB
   },
 
   // Analytics
@@ -52,20 +48,12 @@ export const ENV = {
   isTest: process.env.NODE_ENV === 'test',
 };
 
-// Validation des variables d'environnement requises
-export function validateEnv() {
-  const required = ['NEXT_PUBLIC_API_URL', 'NEXT_PUBLIC_WS_URL'];
-
-  const missing = required.filter((key) => !process.env[key]);
-
-  if (missing.length > 0) {
-    throw new Error(
-      `Missing required environment variables: ${missing.join(', ')}`
-    );
+/**
+ * Validation RUNTIME UNIQUEMENT (client)
+ * JAMAIS au build / SSR
+ */
+export function validateEnvClient() {
+  if (!ENV.API_URL || !ENV.WS_URL) {
+    console.error('Missing runtime env vars: NEXT_PUBLIC_API_URL, NEXT_PUBLIC_WS_URL');
   }
-}
-
-// Appeler au démarrage de l'application
-if (typeof window === 'undefined') {
-  validateEnv();
 }
