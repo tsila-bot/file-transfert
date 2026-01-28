@@ -3,7 +3,7 @@
 import axios from 'axios';
 import { useAuthStore } from '@/stores/authStore';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL;
+const API_URL = 'https://appwebp2pbackend.onrender.com';
 
 export const apiClient = axios.create({
   baseURL: API_URL,
