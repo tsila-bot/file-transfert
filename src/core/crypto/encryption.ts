@@ -94,31 +94,54 @@ export class EncryptionManager {
    */
   static async encrypt(
     data: ArrayBuffer,
-    key: CryptoKey
+    key: CryptoKey,
+    existingMetadata?: EncryptionMetadata  // 🔐 CRITICAL: Accept pre-defined IV for retries
   ): Promise<EncryptedData> {
-    console.log(`🔒 Encrypting ${data.byteLength} bytes...`);
+    // Suppress verbose logging during bulk operations
+    // console.log(`🔒 Encrypting ${data.byteLength} bytes...`);
 
-    // Générer un IV aléatoire
-    const iv = crypto.getRandomValues(new Uint8Array(this.IV_LENGTH));
+    // 🔐 If we have existing metadata (retry), use same IV instead of generating new one
+    let iv: Uint8Array;
+    let isRetry = false;
+    if (existingMetadata) {
+      isRetry = true;
+      // console.log(`🔄 Using existing IV from metadata (retry)`);
+      // ✅ FIX: Create a fresh ArrayBuffer and type it explicitly
+      const decoded = this.base64ToArrayBuffer(existingMetadata.iv);
+      const freshBuffer = new ArrayBuffer(decoded.byteLength);
+      new Uint8Array(freshBuffer).set(new Uint8Array(decoded));
+      iv = new Uint8Array(freshBuffer as ArrayBuffer);
+    } else {
+      // Générer un IV aléatoire
+      iv = crypto.getRandomValues(new Uint8Array(this.IV_LENGTH));
+    }
 
     // Chiffrer
     const encryptedBuffer = await crypto.subtle.encrypt(
       {
         name: this.ALGORITHM,
-        iv: iv,
+        iv: new Uint8Array(iv) as Uint8Array<ArrayBuffer>,
       },
       key,
       data
     );
 
-    // Créer les métadonnées
+    // ✅ CRITICAL FIX: Always create NEW metadata with encrypted buffer
+    // 🔴 BUG FIX: When reusing IV from existingMetadata, we MUST NOT reuse metadata object
+    // because it only contains IV, algorithm, keySize - it does NOT contain the encrypted data!
+    // Reusing it causes the encryptedBuffer to be lost
+    
+    // Créer les métadonnées (toujours NEUF, jamais réutilisé)
+    // ✅ FIX: Ensure iv.buffer is an ArrayBuffer, not ArrayBufferLike
+    const ivBuffer = iv.buffer as ArrayBuffer;
     const metadata: EncryptionMetadata = {
-      iv: this.arrayBufferToBase64(iv.buffer),
+      iv: this.arrayBufferToBase64(ivBuffer),
       algorithm: this.ALGORITHM,
       keySize: this.KEY_SIZE,
     };
 
-    console.log(`✅ Encrypted successfully (${encryptedBuffer.byteLength} bytes)`);
+    // Suppress verbose logging
+    // console.log(`✅ Encrypted successfully (${encryptedBuffer.byteLength} bytes)`);
 
     return {
       data: encryptedBuffer,
@@ -166,9 +189,10 @@ export class EncryptionManager {
    */
   static async encryptChunk(
     chunkData: ArrayBuffer,
-    key: CryptoKey
+    key: CryptoKey,
+    existingMetadata?: EncryptionMetadata  // 🔐 For retries with same IV
   ): Promise<EncryptedData> {
-    return this.encrypt(chunkData, key);
+    return this.encrypt(chunkData, key, existingMetadata);
   }
 
   /**
@@ -235,7 +259,8 @@ export class EncryptionManager {
     for (let i = 0; i < binaryString.length; i++) {
       bytes[i] = binaryString.charCodeAt(i);
     }
-    return bytes.buffer;
+    // ✅ FIX: Ensure we return a proper ArrayBuffer, not ArrayBufferLike
+    return bytes.buffer as ArrayBuffer;
   }
 }
 

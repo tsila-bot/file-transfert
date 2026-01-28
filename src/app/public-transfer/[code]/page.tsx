@@ -115,7 +115,7 @@ export default function PublicTransferPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 flex items-center justify-center">
+      <div className="min-h-screen bg-linear-to-br from-blue-50 via-indigo-50 to-purple-50 flex items-center justify-center">
         <div className="text-center bg-white/80 backdrop-blur-sm rounded-2xl p-8 shadow-lg">
           <Loader2 className="w-16 h-16 animate-spin text-blue-600 mx-auto mb-4" />
           <p className="text-gray-700 font-medium">Chargement du lien de partage...</p>
@@ -172,7 +172,7 @@ export default function PublicTransferPage() {
           </p>
 
           {/* Info du fichier */}
-          <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-4 mb-6 border border-blue-100">
+          <div className="bg-linear-to-r from-blue-50 to-indigo-50 rounded-xl p-4 mb-6 border border-blue-100">
             <div className="flex items-center gap-3">
               <div className="text-3xl">{getFileIcon(link.fileMimeType)}</div>
               <div className="flex-1 min-w-0">

@@ -41,25 +41,20 @@ export class P2PManager {
         
         // Si FULLY CONNECTÉE (data channels prêts), la réutiliser
         if (existing.isConnected() && existing.areDataChannelsReady()) {
-          console.log('Already fully connected to this peer');
           return existing;
         }
         
         // Si elle n'est pas connectée, fermer l'ancienne tentative
         if (!existing.isConnected()) {
-          console.log('Existing connection attempt failed, closing and retrying...');
           existing.close();
           this.connections.delete(peerId);
         } else {
           // Si connectée mais data channels pas ready, attendre un peu
-          console.log('Connection exists but data channels not ready, waiting...');
           await new Promise(resolve => setTimeout(resolve, 500));
           
           if (existing.areDataChannelsReady()) {
-            console.log('Data channels are now ready, using existing connection');
             return existing;
           } else {
-            console.log('Data channels still not ready after wait, closing and retrying...');
             existing.close();
             this.connections.delete(peerId);
           }
@@ -120,36 +115,27 @@ export class P2PManager {
     peerName: string,
     offer: SignalData
   ): Promise<PeerConnection> {
-    console.log(`📞 Accepting connection from ${peerName}...`);
-
     // ✅ FIX: Only close existing connection if it's NOT already fully connected
-    // If it's already connected (data channels open), keep using it
-    // Only close if it's still connecting or in a failed/closed state
     if (this.connections.has(peerId)) {
       const existing = this.connections.get(peerId)!;
       
       // If already fully connected, just return it
       if (existing.isConnected() && existing.areDataChannelsReady()) {
-        console.log(`✅ Already fully connected to ${peerId}, reusing existing connection`);
         return existing;
       }
       
       // Only close if it's in a transient state (connecting, disconnected, etc)
       if (!existing.isConnected()) {
-        console.log(`🧹 Closing incomplete connection with ${peerId} before accepting new one`);
         existing.close();
         this.connections.delete(peerId);
       } else {
         // If it's connected but not ready (data channels), wait a bit
-        console.log(`⏳ Existing connection with ${peerId} is in progress, waiting...`);
         await new Promise(resolve => setTimeout(resolve, 500));
         
         // Check again
         if (existing.areDataChannelsReady()) {
-          console.log(`✅ Existing connection to ${peerId} is now ready`);
           return existing;
         } else {
-          console.log(`🧹 Existing connection with ${peerId} still not ready, closing and creating new`);
           existing.close();
           this.connections.delete(peerId);
         }
@@ -165,7 +151,6 @@ export class P2PManager {
         // ✅ FIX: Remove peer from pendingOffers once connection is established
         if (state === 'connected') {
           this.pendingOffers.delete(peerId);
-          console.log(`✅ Connection established with ${peerName}, removing from pending offers`);
         }
         this.handleStateChange(peerId, state);
       },

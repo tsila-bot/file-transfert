@@ -42,6 +42,7 @@ export type MessageType =
   | 'ack'             // Accusé de réception général
   | 'heartbeat'       // Ping pour vérifier la connexion
   | 'heartbeat_ack'   // Réponse au heartbeat
+  | 'transfer_status' // ✅ Statut du transfert côté récepteur
   | 'transfer_sync'   // Synchronisation de transfert
   | 'resume_request'  // Demande de reprise
   | 'resume_ack';     // Accusé de reprise

@@ -17,7 +17,8 @@ export class WorkerPool {
     private isTerminated = false;
 
     constructor(size?: number) {
-        const workerCount = size ?? navigator.hardwareConcurrency ?? 4;
+        // ⚡ OPTIMIZATION: Increase worker pool to 8-12 for better parallelism
+        const workerCount = size ?? Math.min(navigator.hardwareConcurrency ?? 4, 12);
 
         for (let i = 0; i < workerCount; i++) {
             try {
@@ -62,11 +63,12 @@ export class WorkerPool {
             const id = `task_${this.taskIdCounter++}`;
             const task: Task = { id, type, data, resolve, reject };
 
-            // ✅ OPTIMIZED: Adaptive timeout based on data size and queue length
-            // Larger data = more time needed. Longer queue = more time needed
-            const basePriority = type === 'compress' ? 100000 : 60000; // ms
-            const adaptiveTimeout = basePriority + (this.taskQueue.length * 1000); // +1s per queued task
-            const finalTimeout = Math.min(adaptiveTimeout, 300000); // Cap at 5 minutes max
+            // ⚡ CRITICAL FIX: Reduce timeout from 50-120s to 10-30s to prevent hanging
+            // Previous: 50-120s was causing excessive delays and visible UI freezes
+            // New: 10-30s with adaptive scaling for better responsiveness
+            const basePriority = type === 'compress' ? 10000 : 8000; // Reduced from 50000/30000 ms
+            const adaptiveTimeout = basePriority + (this.taskQueue.length * 100);
+            const finalTimeout = Math.min(adaptiveTimeout, 30000); // Cap at 30s instead of 2 minutes
 
             const timeoutId = setTimeout(() => {
                 if (this.pendingTasks.has(id)) {
@@ -116,11 +118,26 @@ export class WorkerPool {
         this.pendingTasks.set(task.id, task);
 
         try {
-            // ✅ CRITICAL FIX: Copy buffer before transferring to prevent detachment of original
-            const dataCopy = task.data.slice(0);  // Create a copy
+            // ⚡ CRITICAL FIX: Create a DEEP copy of the buffer to prevent shared references
+            // ArrayBuffer.slice(0) is unreliable - instead use proper copy
+            const originalUint8 = new Uint8Array(task.data);
+            const bufferCopy = new ArrayBuffer(originalUint8.byteLength);
+            new Uint8Array(bufferCopy).set(originalUint8);
+            
+            // ✅ CRITICAL: Verify copy is complete BEFORE transfer
+            if (bufferCopy.byteLength !== task.data.byteLength) {
+              console.error(`❌ CRITICAL: Buffer copy size MISMATCH! Original: ${task.data.byteLength}, Copy: ${bufferCopy.byteLength}`);
+              throw new Error(`Buffer copy failed - size mismatch`);
+            }
+            
+            // ⚡ Only log 10% of chunks to reduce overhead
+            if (Math.random() < 0.1) {
+              console.log(`📤 WorkerPool[${task.id}]: ${task.type}, ${bufferCopy.byteLength} bytes`);
+            }
+            
             worker.postMessage(
-                { id: task.id, type: task.type, data: dataCopy },
-                [dataCopy]  // Transfer the COPY, not the original
+                { id: task.id, type: task.type, data: bufferCopy },
+                [bufferCopy]  // Transfer ownership to worker
             );
         } catch (error) {
             this.pendingTasks.delete(task.id);

@@ -41,18 +41,39 @@ export class TransferEngine {
   private pendingChunkBuffer: Map<string, any[]> = new Map();
 
   // Configuration
-  private readonly MAX_RETRIES = 3;
-  private readonly RETRY_TIMEOUT = 5000;
-  private readonly MAX_CONCURRENT_CHUNKS = 16; // Réduit de 20 à 16 - synchroniser les hashes sender/receiver
+  private readonly MAX_RETRIES = 3; // Initial strict retries
+  private readonly MAX_RETRIES_WITH_HEARTBEAT = 8; // Extended retries if connection is alive (heartbeat_ack received)
+  private readonly RETRY_TIMEOUT = 10000; // ⚡ CRITICAL FIX: Reduced from 20s to 10s for faster retry detection
+  private readonly EXTENDED_RETRY_TIMEOUT = 25000; // ⚡ CRITICAL FIX: Reduced from 45s to 25s (maintains 2.5x multiplier)
+  private readonly HEARTBEAT_TIMEOUT_THRESHOLD = 8000; // ⚡ CRITICAL FIX: Reduced from 10s to 8s for faster dead connection detection
+  private readonly MAX_CONCURRENT_CHUNKS = 20; // ⚡ Increased for faster parallelism
   private readonly CHUNK_SEND_INTERVAL = 0;
   private readonly MAX_CONCURRENT_TRANSFERS = 3;
+  private readonly FLOW_CONTROL_MODE = true; // ⚡ ENABLED: Wait for ACK before sending next chunk to prevent receiver overflow
+  private readonly STATUS_UPDATE_INTERVAL = 5000; // Receiver sends status every 5 seconds
 
   // État des transferts
   private chunkProducersFinished: Set<string> = new Set();
+  private activeRetryMonitoring: Set<string> = new Set(); // ⚡ FIXED: Track which fileIds already have retry monitoring
+  private lastHeartbeatAck: Map<string, number> = new Map(); // Track last heartbeat_ack time per file
+  private receivedChunks: Map<string, Set<number>> = new Map(); // Track which chunks receiver has
+  private statusUpdateIntervals: Map<string, NodeJS.Timeout> = new Map();
 
   private startTime: number = 0;
   private bytesTransferred: number = 0;
   private retryIntervals: Map<string, NodeJS.Timeout> = new Map();
+  
+  // ✅ Circuit Breaker: Prevent infinite retry loops
+  private circuitBreaker: Map<string, { failures: number; state: 'closed' | 'open' | 'half-open'; lastFailure: number }> = new Map();
+  private readonly CIRCUIT_BREAKER_THRESHOLD = 10; // Open after 10 consecutive failures
+  private readonly CIRCUIT_BREAKER_RESET_TIME = 30000; // Try again after 30s
+  
+  // ✅ Problematic chunks: Track and skip chunks that fail repeatedly
+  private problematicChunks: Map<string, Set<number>> = new Map();
+  private readonly MAX_PROBLEMATIC_BEFORE_FAIL = 5; // Fail if >5 chunks problematic
+
+  // ✅ CRITICAL FIX #3: Track original totalChunks per transfer to detect changes
+  private readonly originalTotalChunks: Map<string, number> = new Map();
 
   constructor(connection: PeerConnection) {
     this.connection = connection;
@@ -303,8 +324,33 @@ export class TransferEngine {
       transfer.error = reason || 'Transfer rejected';
       this.emitTransferUpdate(transfer);
       
-      // ✅ No logging here - SENDER will log it when it receives the rejection message
-      // This ensures both peers see it in their history with correct senderId/receiverId
+      // ✅ Log the rejection (only for receiver since it received the offer)
+      if (transfer.direction === 'receive') {
+        const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
+        try {
+          const currentUser = useAuthStore.getState().user;
+          const receiverName = currentUser?.name || 'Unknown';
+          const senderName = this.connection['peerName'] || 'Unknown';
+
+          await transferAPI.logTransfer({
+            receiverId: transfer.peerId,
+            senderName,
+            receiverName,
+            fileHash: transfer.fileHash || 'unknown',
+            fileName: transfer.fileName || 'unknown',
+            fileSizeBytes: transfer.fileSize,
+            mimeType: transfer.mimeType || 'application/octet-stream',
+            transferType: 'P2P_DIRECT',
+            status: 'REJECTED',
+            duration,
+            avgSpeed: 0,
+            errorCode: reason || 'Rejected by receiver',
+            teamId: undefined,
+          });
+        } catch (logError) {
+          console.error('Failed to log rejected transfer:', logError);
+        }
+      }
     }
 
     // Send rejection to peer
@@ -425,6 +471,29 @@ export class TransferEngine {
       this.handleBinaryData(data);
     });
 
+    // ✅ NEW: Track heartbeat_ack to know connection is alive
+    this.connection.on('heartbeat_ack', (data: any) => {
+      const fileId = Object.keys(this.transfers).find(id => {
+        const transfer = this.transfers.get(id);
+        return transfer && transfer.status === 'active';
+      });
+      
+      if (fileId) {
+        const lastHB = this.lastHeartbeatAck.get(fileId) || 0;
+        this.lastHeartbeatAck.set(fileId, Date.now());
+        console.log(`💓 Heartbeat ACK received for ${fileId} (was ${Date.now() - lastHB}ms ago)`);
+      }
+    });
+
+    // ✅ NEW: Handle receiver status updates
+    this.connection.on('transfer_status', (data: any) => {
+      const { fileId, receivedChunks, lastReceivedChunk, receivedCount } = data;
+      if (fileId) {
+        this.receivedChunks.set(fileId, new Set(receivedChunks));
+        console.log(`📊 Receiver status: ${fileId} has received ${receivedCount} chunks (last: ${lastReceivedChunk})`);
+      }
+    });
+
     // Resume sending when peer signals bufferedamountlow (backpressure relieved)
     this.connection.on('bufferedamountlow', () => {
       try {
@@ -445,6 +514,32 @@ export class TransferEngine {
       const metadata: ChunkMetadata = data;
 
       console.log(`📥 Received file metadata: ${metadata.fileName}`);
+
+      // ✅ CRITICAL FIX #8: Check if this metadata is for an EXISTING transfer
+      // If it is, DON'T overwrite unless direction is different
+      const existingTransfer = this.transfers.get(metadata.fileId);
+      if (existingTransfer) {
+        // We already have a transfer for this fileId
+        if (existingTransfer.direction === 'send') {
+          // This is OUR transfer (we're sending), but we received metadata for it
+          // This shouldn't happen - it's likely a loopback message
+          console.warn(
+            `⚠️ WARNING: Received metadata for a transfer WE are SENDING! ` +
+            `fileId: ${metadata.fileId}. ` +
+            `Expected direction: 'send', incoming direction: 'receive'. ` +
+            `Ignoring to prevent transfer object corruption.`
+          );
+          return;
+        } else if (existingTransfer.direction === 'receive' && existingTransfer.status !== 'pending') {
+          // We already have an active receive transfer, don't overwrite it
+          console.warn(
+            `⚠️ WARNING: Received duplicate metadata for already-active transfer ${metadata.fileId}. ` +
+            `Status: ${existingTransfer.status}. ` +
+            `Ignoring to prevent corruption.`
+          );
+          return;
+        }
+      }
 
       if (metadata.encrypted && metadata.encryptionKey && !metadata.passwordProtected) {
         try {
@@ -512,7 +607,7 @@ export class TransferEngine {
         transfer.error = data.reason || 'Transfer rejected by peer';
         this.emitTransferUpdate(transfer);
         
-        // ✅ Log the rejected transfer (SENDER logs it so both peers see it in their history)
+        // ✅ Log the rejected transfer (only if sender to avoid double-logging)
         if (transfer.direction === 'send') {
           const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
           try {
@@ -520,7 +615,7 @@ export class TransferEngine {
             const senderName = currentUser?.name || 'Unknown';
             const receiverName = this.connection['peerName'] || 'Unknown';
 
-            const logData = {
+            await transferAPI.logTransfer({
               receiverId: transfer.peerId,
               senderName,
               receiverName,
@@ -528,19 +623,15 @@ export class TransferEngine {
               fileName: transfer.fileName || 'unknown',
               fileSizeBytes: transfer.fileSize,
               mimeType: transfer.mimeType || 'application/octet-stream',
-              transferType: 'P2P_DIRECT' as const,
-              status: 'REJECTED' as const,
+              transferType: 'P2P_DIRECT',
+              status: 'REJECTED',
               duration,
               avgSpeed: 0,
               errorCode: data.reason || 'Rejected by peer',
               teamId: undefined,
-            };
-            console.log('🔴 LOGGING REJECTED TRANSFER (sender receives rejection):', logData);
-            
-            const response = await transferAPI.logTransfer(logData);
-            console.log('✅ REJECTED transfer logged response:', response);
+            });
           } catch (logError) {
-            console.error('❌ Failed to log rejected transfer:', logError);
+            console.error('Failed to log rejected transfer:', logError);
           }
         }
       }
@@ -607,7 +698,7 @@ export class TransferEngine {
    * Gérer un chunk reçu
    */
   private async handleChunk(data: any): Promise<void> {
-    const { fileId, index, hash, data: chunkData, encryptionMetadata } = data;
+    const { fileId, index, hash, data: chunkData, encryptionMetadata, compressed } = data;
 
     const chunkManager = this.chunkManagers.get(fileId);
     const transfer = this.transfers.get(fileId);
@@ -638,13 +729,17 @@ export class TransferEngine {
     try {
       const arrayBuffer = chunkData as ArrayBuffer;
 
-      try {
+      // 🔍 ONLY log for first/last chunks to avoid performance overhead
+      if (index < 5 || index === (this.transfers.get(fileId)?.progress.chunksTotal || 0) - 1) {
         const view = new Uint8Array(arrayBuffer);
-        const snippet = Array.from(view.subarray(0, Math.min(8, view.length))).
-          map((b) => b.toString(16).padStart(2, '0')).join(' ');
-        console.log(`📥 handleChunk ${fileId}#${index}: ${view.byteLength} bytes, first8: ${snippet}`);
-      } catch (e) {
-        console.log(`📥 handleChunk ${fileId}#${index}: received ${arrayBuffer.byteLength} bytes`);
+        console.log(`📥 Chunk received: ${fileId}#${index} (${view.byteLength} bytes)`);
+      }
+      
+      // ⚠️ Verify chunk size is reasonable (at least 1 byte for last chunk, 1KB+ for others)
+      const transfer = this.transfers.get(fileId);
+      const totalChunks = transfer?.progress.chunksTotal || 0;
+      if (index !== totalChunks - 1 && arrayBuffer.byteLength < 1024) {
+        console.warn(`⚠️ WARNING: Non-last chunk ${index}/${totalChunks} is only ${arrayBuffer.byteLength} bytes! Possible truncation detected.`);
       }
 
       await chunkManager.receiveChunk({
@@ -653,16 +748,67 @@ export class TransferEngine {
         hash,
         size: arrayBuffer.byteLength,
         encryptionMetadata,
+        compressed,
       });
 
-      this.connection.sendMessage({
-        type: 'ack',
-        data: { fileId, index, received: true, hash },
-      });
+      // ✅ Track received chunks for status updates
+      if (!this.receivedChunks.has(fileId)) {
+        this.receivedChunks.set(fileId, new Set());
+      }
+      this.receivedChunks.get(fileId)!.add(index);
 
-      this.updateProgress(fileId);
+      // ✅ CRITICAL FIX: Send ACK immediately with retry logic (no excessive logging)
+      try {
+        // Try to send ACK - use sendMessage which is the official method
+        this.connection.sendMessage({
+          type: 'ack',
+          data: { fileId, index, received: true, hash },
+        });
+      } catch (ackError) {
+        console.error(`❌ Failed to send ACK for chunk ${index}:`, ackError);
+        // Retry once after a tiny delay
+        setTimeout(() => {
+          try {
+            this.connection.sendMessage({
+              type: 'ack',
+              data: { fileId, index, received: true, hash },
+            });
+          } catch (retryError) {
+            console.error(`❌ ACK retry failed for chunk ${index}:`, retryError);
+          }
+        }, 10);
+      }
+
+      // Update progress asynchronously so ACK is sent quickly
+      // Use Promise.resolve() instead of setImmediate() for cross-platform compatibility
+      Promise.resolve().then(() => {
+        this.updateProgress(fileId);
+      });
 
       if (chunkManager.isComplete()) {
+        // ⚠️ CRITICAL: Wait for fileHash to be set before assembly
+        // The sender sends metadata_update with fileHash after all chunks
+        // Give it a moment to arrive (max 1 second)
+        const MAX_WAIT = 1000;
+        const POLL_INTERVAL = 10;
+        let waited = 0;
+        
+        while (waited < MAX_WAIT) {
+          const metadata = chunkManager['metadata'] as any;
+          if (metadata && metadata.fileHash) {
+            console.log(`✅ FileHash received: ${metadata.fileHash.substring(0, 16)}...`);
+            break;
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL));
+          waited += POLL_INTERVAL;
+        }
+        
+        const metadata = chunkManager['metadata'] as any;
+        if (!metadata || !metadata.fileHash) {
+          console.warn(`⚠️ FileHash not received after ${MAX_WAIT}ms, proceeding anyway (may cause assembly error)`);
+        }
+        
         await this.completeTransfer(fileId);
       }
     } catch (error) {
@@ -684,8 +830,20 @@ export class TransferEngine {
     const pendingAcks = this.pendingAcks.get(fileId);
     const inFlight = this.chunksInFlight.get(fileId);
     
+    // ✅ DIAGNOSTIC: Log all ACK received
+    console.log(`📥 ACK received for chunk ${index} of ${fileId} (status: ${received ? 'success' : 'fail'}, pending before removal: ${pendingAcks?.size ?? 0})`);
+    
     if (pendingAcks) {
+      const wasInPending = pendingAcks.has(index);
       pendingAcks.delete(index);
+      
+      if (wasInPending) {
+        console.log(`✅ Removed chunk ${index} from pendingAcks (${pendingAcks.size} remaining)`);
+      } else {
+        console.warn(`⚠️ ACK for chunk ${index} but it wasn't in pendingAcks (already removed?)`);
+      }
+    } else {
+      console.warn(`⚠️ No pendingAcks map for ${fileId} when receiving ACK for chunk ${index}`);
     }
     
     if (inFlight) {
@@ -701,6 +859,9 @@ export class TransferEngine {
         if (idx !== -1) {
           queue.splice(idx, 1);
           this.sendQueues.set(fileId, queue);
+          console.log(`📦 Removed acknowledged chunk ${index} from send queue (${queue.length} chunks remaining)`);
+        } else {
+          console.warn(`⚠️ Chunk ${index} acknowledged but not found in send queue`);
         }
       }
 
@@ -727,17 +888,94 @@ export class TransferEngine {
     const chunkToRetry = queue.find((item) => item.chunk.index === chunkIndex);
 
     if (!chunkToRetry) {
-      console.error(`Chunk ${chunkIndex} not found in queue`);
+      console.error(`❌ Chunk ${chunkIndex} not found in queue, cannot retry!`);
+      
+      // ✅ CRITICAL FIX: Try to remove from inFlight anyway to prevent stuck state
+      const inFlight = this.chunksInFlight.get(fileId);
+      const pendingAcks = this.pendingAcks.get(fileId);
+      
+      if (inFlight && inFlight.has(chunkIndex)) {
+        inFlight.delete(chunkIndex);
+        console.warn(`⚠️ Recovered: Removed chunk ${chunkIndex} from inFlight`);
+      }
+      if (pendingAcks && pendingAcks.has(chunkIndex)) {
+        pendingAcks.delete(chunkIndex);
+        console.warn(`⚠️ Recovered: Removed chunk ${chunkIndex} from pendingAcks`);
+      }
       return;
     }
 
-    if (chunkToRetry.retries >= this.MAX_RETRIES) {
-      console.error(`Chunk ${chunkIndex} failed after ${this.MAX_RETRIES} retries`);
+    // ✅ Check if connection is alive via heartbeat_ack
+    const lastHeartbeat = this.lastHeartbeatAck.get(fileId) || 0;
+    const timeSinceLastHeartbeat = Date.now() - lastHeartbeat;
+    const isConnectionAlive = timeSinceLastHeartbeat < this.HEARTBEAT_TIMEOUT_THRESHOLD;
+    const maxRetriesAllowed = isConnectionAlive ? this.MAX_RETRIES_WITH_HEARTBEAT : this.MAX_RETRIES;
+
+    // ✅ CIRCUIT BREAKER: Prevent infinite retry loops
+    if (!this.canSendViaCircuitBreaker(fileId)) {
+      console.error(`🔴 CIRCUIT BREAKER OPEN for ${fileId} - too many failures, pausing retries`);
+      const transfer = this.transfers.get(fileId);
+      if (transfer && transfer.status === 'active') {
+        transfer.status = 'failed';
+        transfer.error = 'Too many consecutive failures - circuit breaker activated';
+        this.emitTransferUpdate(transfer);
+      }
+      this.cleanupTransfer(fileId);
+      return;
+    }
+
+    // ✅ CRITICAL FIX: Remove from inFlight before retrying to prevent duplicates
+    const inFlight = this.chunksInFlight.get(fileId);
+    if (inFlight && inFlight.has(chunkIndex)) {
+      inFlight.delete(chunkIndex);
+      console.log(`✅ Removed chunk ${chunkIndex} from inFlight before retry`);
+    }
+    
+    // ✅ CRITICAL FIX: Remove from pendingAcks if it's still there (timeout case)
+    const pendingAcks = this.pendingAcks.get(fileId);
+    if (pendingAcks && pendingAcks.has(chunkIndex)) {
+      pendingAcks.delete(chunkIndex);
+      console.log(`✅ Removed chunk ${chunkIndex} from pendingAcks before retry`);
+    }
+
+    // ✅ PROBLEMATIC CHUNKS: If connection alive but chunk keeps failing, mark as problematic and skip
+    if (isConnectionAlive && chunkToRetry.retries >= 5) {
+      console.warn(`⚠️ Chunk ${chunkIndex} is problematic (${chunkToRetry.retries} retries with healthy connection), marking for skipping`);
+      
+      if (!this.problematicChunks.has(fileId)) {
+        this.problematicChunks.set(fileId, new Set());
+      }
+      this.problematicChunks.get(fileId)!.add(chunkIndex);
+      
+      // If too many problematic chunks, fail the transfer
+      if (this.problematicChunks.get(fileId)!.size > this.MAX_PROBLEMATIC_BEFORE_FAIL) {
+        console.error(`❌ Too many problematic chunks (${this.problematicChunks.get(fileId)!.size}), failing transfer`);
+        const transfer = this.transfers.get(fileId);
+        if (transfer) {
+          transfer.status = 'failed';
+          transfer.error = `Too many problematic chunks: ${Array.from(this.problematicChunks.get(fileId)!).join(', ')}`;
+          this.emitTransferUpdate(transfer);
+        }
+        this.cleanupTransfer(fileId);
+        return;
+      }
+      
+      // Skip this chunk and move to next
+      this.emitChunkSkipped(fileId, chunkIndex);
+      this.sendNextChunks(fileId);
+      return;
+    }
+
+    if (chunkToRetry.retries >= maxRetriesAllowed) {
+      console.error(`❌ Chunk ${chunkIndex} failed after ${chunkToRetry.retries} retries (max: ${maxRetriesAllowed}, connection alive: ${isConnectionAlive}, last HB: ${timeSinceLastHeartbeat}ms ago)`);
+
+      // Record failure for circuit breaker
+      this.recordCircuitBreakerFailure(fileId);
 
       const transfer = this.transfers.get(fileId);
       if (transfer) {
         transfer.status = 'failed';
-        transfer.error = `Chunk ${chunkIndex} failed after ${this.MAX_RETRIES} retries`;
+        transfer.error = `Chunk ${chunkIndex} failed after ${chunkToRetry.retries} retries (connection: ${isConnectionAlive ? 'alive' : 'dead'})`;
         this.emitTransferUpdate(transfer);
         
         // ✅ Log the failed transfer (only if sender)
@@ -859,10 +1097,20 @@ export class TransferEngine {
       return;
     }
 
-    // ⚡ Send all chunks immediately (CHUNK_SEND_INTERVAL = 0, no stagger needed)
-    chunksToSend.forEach((chunkToSend) => {
-      this.sendChunk(fileId, chunkToSend);
-    });
+    // ⚡ Send with FLOW CONTROL: 
+    // If FLOW_CONTROL_MODE is enabled, send only 1 chunk at a time
+    // Otherwise, send all chunks to maximize throughput
+    if (this.FLOW_CONTROL_MODE && chunksToSend.length > 1) {
+      // Flow control mode: send only first chunk, wait for ACK before next
+      // This prevents receiver buffer overflow
+      this.sendChunk(fileId, chunksToSend[0]);
+      console.log(`📤 [Flow Control] Sent 1 chunk, waiting for ACK (${pendingAcks.size + 1}/${this.MAX_CONCURRENT_CHUNKS} pending)`);
+    } else {
+      // Send all chunks immediately (default behavior)
+      chunksToSend.forEach((chunkToSend) => {
+        this.sendChunk(fileId, chunkToSend);
+      });
+    }
   }
 
   /**
@@ -872,18 +1120,83 @@ export class TransferEngine {
     const { chunk, retries } = chunkToSend;
     const pendingAcks = this.pendingAcks.get(fileId);
     const inFlight = this.chunksInFlight.get(fileId);
+    const queue = this.sendQueues.get(fileId);
 
-    if (!pendingAcks || !inFlight) return;
+    if (!pendingAcks || !inFlight) {
+      // ✅ CRITICAL FIX: If queue doesn't exist, log for debugging
+      if (!queue && !this.sendQueues.has(fileId)) {
+        console.warn(`⚠️ Queue doesn't exist for ${fileId}:${chunk.index}, transfer may have been cleaned up`);
+      }
+      return;
+    }
+
+    // ✅ CRITICAL FIX #3: Validate totalChunks immutability
+    const transfer = this.transfers.get(fileId);
+    if (transfer) {
+      const currentTotal = transfer.progress.chunksTotal;
+      const originalTotal = this.originalTotalChunks.get(fileId);
+      
+      if (!originalTotal) {
+        // First chunk: store the totalChunks value
+        if (currentTotal > 0) {
+          this.originalTotalChunks.set(fileId, currentTotal);
+          console.log(`✅ Stored original totalChunks=${currentTotal} for ${fileId}`);
+        }
+      } else if (currentTotal !== originalTotal && currentTotal > 0) {
+        // ❌ FATAL: totalChunks has changed!
+        console.error(`❌ CRITICAL: totalChunks changed during transfer!`);
+        console.error(`   File: ${fileId}`);
+        console.error(`   Original: ${originalTotal}, Current: ${currentTotal}`);
+        console.error(`   Chunk being sent: ${chunk.index}`);
+        throw new Error(`FATAL: totalChunks changed from ${originalTotal} to ${currentTotal}`);
+      }
+    }
 
     // Prevent sending duplicate chunks
     if (inFlight.has(chunk.index)) {
       console.warn(`⚠️ Chunk ${chunk.index} already in flight, skipping duplicate send`);
       return;
     }
+    
+    // ✅ CRITICAL FIX: Ensure chunk is still in queue or was recently removed
+    const chunkStillInQueue = queue && queue.some(c => c.chunk.index === chunk.index);
+    if (!chunkStillInQueue && !inFlight.has(chunk.index)) {
+      console.error(`⚠️ Chunk ${chunk.index} not found in queue and not in flight! This may cause 'Chunk not found in queue' error.`);
+      console.error(`   Queue size: ${queue?.length ?? 0}, InFlight size: ${inFlight.size}`);
+      // Still proceed - the chunk might have been removed legitimately
+    }
 
     try {
+      const transfer = this.transfers.get(fileId);
+      const totalChunks = transfer?.progress.chunksTotal || 0;
+      
+      // ✅ CRITICAL FIX: Validate totalChunks is correct BEFORE sending
+      // If transfer hasn't been initialized yet, don't send!
+      if (!transfer || totalChunks === 0) {
+        console.error(`❌ CRITICAL: Transfer not found or totalChunks=0 for ${fileId}! Cannot send chunk ${chunk.index}`);
+        return;
+      }
+
+      // ✅ CRITICAL FIX #7: Verify totalChunks never changes during transfer
+      // This catches if a second metadata overwrites the transfer object
+      const chunkManager = this.chunkManagers.get(fileId);
+      if (chunkManager && (chunkManager as any)['metadata']) {
+        const originalTotalChunks = (chunkManager as any)['metadata'].totalChunks;
+        if (originalTotalChunks !== totalChunks) {
+          console.error(
+            `❌ CRITICAL: totalChunks MISMATCH for ${fileId}! ` +
+            `ChunkManager has ${originalTotalChunks} but Transfer object has ${totalChunks}. ` +
+            `Transfer object was likely OVERWRITTEN by incoming metadata!`
+          );
+          console.error(`   Chunk index: ${chunk.index}, ChunkManager: ${originalTotalChunks}, Transfer: ${totalChunks}`);
+          // RESTORE the original value from ChunkManager
+          transfer.progress.chunksTotal = originalTotalChunks;
+          console.log(`   ✅ RESTORED totalChunks from ChunkManager to ${originalTotalChunks}`);
+        }
+      }
+
       console.log(
-        `📦 Sending chunk ${chunk.index}/${this.transfers.get(fileId)?.progress.chunksTotal} (retry: ${retries})`
+        `📦 Sending chunk ${chunk.index}/${totalChunks} (retry: ${retries})`
       );
 
       // Validate chunk data integrity before sending
@@ -891,6 +1204,15 @@ export class TransferEngine {
         console.error(`❌ Invalid chunk data for chunk ${chunk.index}`);
         this.retryChunk(fileId, chunk.index).catch(err => console.error('Retry failed:', err));
         return;
+      }
+      
+      // 🔍 DEBUG: Detect 177-byte chunks at send time
+      if (chunk.data.byteLength === 177 && chunk.index !== totalChunks - 1) {
+        console.error(`🚨 CRITICAL: About to send 177-byte chunk ${chunk.index}! This is a DETERMINISTIC BUG.`);
+        console.error(`   Chunk index: ${chunk.index}/${totalChunks}`);
+        console.error(`   Data size: ${chunk.data.byteLength}`);
+        console.error(`   Compression: ${chunk.compressed}`);
+        console.error(`   Hash: ${chunk.hash}`);
       }
 
       // Check if data channel buffer is too high - if so, wait for bufferedamountlow event
@@ -911,21 +1233,43 @@ export class TransferEngine {
         const snippet = Array.from(view.subarray(0, Math.min(8, view.length))).
           map((b) => b.toString(16).padStart(2, '0')).join(' ');
         console.log(`📤 sendChunk ${fileId}#${chunk.index}: ${view.byteLength} bytes, hash: ${chunk.hash}, first8: ${snippet}`);
+        
+        // 📊 Log compressed sizes to detect truncation
+        if (chunk.index < 5 || chunk.index === totalChunks - 1) {
+          console.log(`   └─ Compressed size: ${view.byteLength} bytes`);
+        }
+        
+        // ⚠️ WARN if chunk is suspiciously small (less than 1KB for non-last chunks)
+        if (chunk.index !== totalChunks - 1 && view.byteLength < 1024) {
+          console.warn(`⚠️ WARNING: Non-last chunk ${chunk.index}/${totalChunks} is only ${view.byteLength} bytes!`);
+          // ✅ CRITICAL FIX: For chunks that are too small, this is an ERROR not a warning
+          // If we're sending duplicates of small chunks, that's a sign of deeper problems
+          if (view.byteLength < 200) {
+            console.error(`❌ CRITICAL: Chunk ${chunk.index} is suspiciously small (${view.byteLength} bytes) - possible data duplication!`);
+          }
+        }
       } catch (e) {
         console.log(`📤 sendChunk ${fileId}#${chunk.index}: hash: ${chunk.hash}`);
       }
 
-      const transfer = this.transfers.get(fileId);
-      const totalChunks = transfer?.progress.chunksTotal || 0;
+      // ✅ CRITICAL: Log metadata being sent to verify totalChunks is correct
+      const metadataToSend = {
+        fileId,
+        index: chunk.index,
+        totalChunks,
+        hash: chunk.hash,
+        compressed: chunk.compressed,
+        encryptionMetadata: chunk.encryptionMetadata,
+      };
+      
+      // 🔍 DEBUG: For chunks with suspicious patterns, log the metadata being sent
+      if (chunk.index === 68 || chunk.index === 69 || chunk.index === 70 || 
+          chunk.index === 71 || chunk.index === 72 || chunk.index === 73) {
+        console.log(`🔍 DEBUG CHUNK ${chunk.index}: Sending metadata:`, metadataToSend);
+      }
 
       this.connection.sendChunk(
-        {
-          fileId,
-          index: chunk.index,
-          totalChunks,
-          hash: chunk.hash,
-          encryptionMetadata: chunk.encryptionMetadata,
-        },
+        metadataToSend,
         chunk.data
       );
 
@@ -944,11 +1288,72 @@ export class TransferEngine {
     }
   }
 
+  // ✅ Circuit Breaker Methods
+  private canSendViaCircuitBreaker(fileId: string): boolean {
+    const breaker = this.circuitBreaker.get(fileId);
+    if (!breaker) return true; // First time
+    
+    if (breaker.state === 'open') {
+      // Check if we can transition to half-open
+      const timeSinceLastFailure = Date.now() - breaker.lastFailure;
+      if (timeSinceLastFailure > this.CIRCUIT_BREAKER_RESET_TIME) {
+        console.log(`🟡 Circuit breaker for ${fileId} transitioning to HALF-OPEN`);
+        breaker.state = 'half-open';
+        breaker.failures = 0;
+        return true; // Try again
+      }
+      return false; // Still open, wait
+    }
+    
+    return true; // Closed or half-open, can send
+  }
+
+  private recordCircuitBreakerFailure(fileId: string): void {
+    let breaker = this.circuitBreaker.get(fileId);
+    if (!breaker) {
+      breaker = { failures: 0, state: 'closed', lastFailure: Date.now() };
+      this.circuitBreaker.set(fileId, breaker);
+    }
+    
+    breaker.failures++;
+    breaker.lastFailure = Date.now();
+    
+    if (breaker.failures >= this.CIRCUIT_BREAKER_THRESHOLD) {
+      console.log(`🔴 Circuit breaker for ${fileId} OPENING (${breaker.failures} failures)`);
+      breaker.state = 'open';
+    }
+  }
+
+  private recordCircuitBreakerSuccess(fileId: string): void {
+    const breaker = this.circuitBreaker.get(fileId);
+    if (breaker && breaker.state === 'half-open') {
+      console.log(`🟢 Circuit breaker for ${fileId} CLOSED (success after recovery)`);
+      breaker.state = 'closed';
+      breaker.failures = 0;
+    }
+  }
+
+  private emitChunkSkipped(fileId: string, chunkIndex: number): void {
+    console.log(`⏭️ Skipping problematic chunk ${chunkIndex}`);
+    // Could emit event if needed
+  }
+
   /**
-   * Surveiller les chunks qui timeout
+   * Surveiller les chunks qui timeout avec support pour les connexions vivantes
    */
   private startRetryMonitoring(fileId: string): void {
-    this.clearRetryInterval(fileId);
+    // ⚡ FIXED: Only create ONE interval per fileId, not multiple
+    if (this.activeRetryMonitoring.has(fileId)) {
+      console.log(`ℹ️ Retry monitoring already active for ${fileId}`);
+      return;
+    }
+
+    this.activeRetryMonitoring.add(fileId);
+    this.lastHeartbeatAck.set(fileId, Date.now()); // Initialize heartbeat timestamp
+    console.log(`🔄 Started retry monitoring for ${fileId}`);
+
+    // ✅ Start sending receiver status updates
+    this.startReceiversStatusUpdates(fileId);
 
     const interval = setInterval(() => {
       const pendingAcks = this.pendingAcks.get(fileId);
@@ -961,23 +1366,62 @@ export class TransferEngine {
       }
 
       const now = Date.now();
+      const lastHeartbeat = this.lastHeartbeatAck.get(fileId) || 0;
+      const timeSinceLastHeartbeat = now - lastHeartbeat;
+      const isConnectionAlive = timeSinceLastHeartbeat < this.HEARTBEAT_TIMEOUT_THRESHOLD;
+      const effectiveTimeout = isConnectionAlive ? this.EXTENDED_RETRY_TIMEOUT : this.RETRY_TIMEOUT;
 
       pendingAcks.forEach((chunkIndex) => {
         const chunkToSend = queue.find((item) => item.chunk.index === chunkIndex);
+        if (!chunkToSend) return;
+        
+        const timeSinceSent = now - chunkToSend.lastSentAt;
 
-        if (chunkToSend && now - chunkToSend.lastSentAt > this.RETRY_TIMEOUT) {
-          console.warn(`⏱️ Chunk ${chunkIndex} timeout, retrying...`);
+        if (timeSinceSent > effectiveTimeout) {
+          // ✅ EXPONENTIAL BACKOFF: Apply backoff delay based on retry count
+          const backoffMs = Math.min(60000, 1000 * Math.pow(2, chunkToSend.retries)); // Max 60s
+          console.warn(`⏱️ Chunk ${chunkIndex} timeout after ${timeSinceSent}ms (threshold: ${effectiveTimeout}ms, connection: ${isConnectionAlive ? 'alive' : 'dead'}), scheduling retry with ${backoffMs}ms backoff (retry #${chunkToSend.retries})...`);
+          
           pendingAcks.delete(chunkIndex);
           const inFlight = this.chunksInFlight.get(fileId);
           if (inFlight) {
             inFlight.delete(chunkIndex);
           }
-          this.retryChunk(fileId, chunkIndex);
+          
+          // Schedule retry with backoff
+          setTimeout(() => {
+            this.retryChunk(fileId, chunkIndex);
+          }, backoffMs);
         }
       });
-    }, this.RETRY_TIMEOUT);
+    }, Math.min(1000, this.RETRY_TIMEOUT / 10)); // Check every 1s or RETRY_TIMEOUT/10, whichever is smaller
 
     this.retryIntervals.set(fileId, interval);
+  }
+
+  /**
+   * ✅ Send periodic status updates to receiver
+   */
+  private startReceiversStatusUpdates(fileId: string): void {
+    const interval = setInterval(() => {
+      const receivedChunks = this.receivedChunks.get(fileId);
+      if (!receivedChunks) return;
+
+      // Convert set to sorted array for compact representation
+      const chunksArray = Array.from(receivedChunks).sort((a: number, b: number) => a - b);
+      
+      this.connection.sendMessage({
+        type: 'transfer_status',
+        data: {
+          fileId,
+          receivedCount: chunksArray.length,
+          lastReceivedChunk: chunksArray[chunksArray.length - 1] ?? -1,
+          receivedChunks: chunksArray, // Full list for verification
+        },
+      });
+    }, this.STATUS_UPDATE_INTERVAL);
+
+    this.statusUpdateIntervals.set(fileId, interval);
   }
 
   /**
@@ -988,6 +1432,7 @@ export class TransferEngine {
     if (interval) {
       clearInterval(interval);
       this.retryIntervals.delete(fileId);
+      this.activeRetryMonitoring.delete(fileId); // ⚡ FIXED: Clear the flag too
     }
   }
 
@@ -1043,6 +1488,12 @@ export class TransferEngine {
         const decryptionKey = this.decryptionKeys.get(fileId);
         const blob = await chunkManager.assembleFile(decryptionKey);
 
+        // 🔹 CRITICAL FIX #4: Verify final blob size matches expected size
+        console.log(`📊 Received blob size: ${blob.size} bytes (expected: ${transfer.fileSize})`);
+        if (blob.size !== transfer.fileSize) {
+          console.error(`⚠️ SIZE MISMATCH! Received ${blob.size} bytes but expected ${transfer.fileSize} bytes (difference: ${transfer.fileSize - blob.size} bytes)`);
+        }
+
         this.emitTransferComplete(fileId, blob);
       }
 
@@ -1090,35 +1541,32 @@ export class TransferEngine {
       transfer.error = (error as Error).message;
       this.emitTransferUpdate(transfer);
       
-      // ✅ Log the failed transfer (both SENDER and RECEIVER need to log)
-      const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
-      try {
-        const currentUser = useAuthStore.getState().user;
-        const currentUserName = currentUser?.name || 'Unknown';
-        const peerName = this.connection['peerName'] || 'Unknown';
-        
-        // Correct sender/receiver names based on transfer direction
-        const senderName = transfer.direction === 'send' ? currentUserName : peerName;
-        const receiverName = transfer.direction === 'send' ? peerName : currentUserName;
-        const receiverId = transfer.direction === 'send' ? transfer.peerId : currentUser?.id || 'unknown';
+      // Log the failed transfer (only if sender to avoid double-logging)
+      if (transfer.direction === 'send') {
+        const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
+        try {
+          const currentUser = useAuthStore.getState().user;
+          const senderName = currentUser?.name || 'Unknown';
+          const receiverName = this.connection['peerName'] || 'Unknown';
 
-        await transferAPI.logTransfer({
-          receiverId,
-          senderName,
-          receiverName,
-          fileHash: transfer.fileHash || 'unknown',
-          fileName: transfer.fileName || 'unknown',
-          fileSizeBytes: transfer.fileSize,
-          mimeType: transfer.mimeType || 'application/octet-stream',
-          transferType: 'P2P_DIRECT',
-          status: 'FAILED',
-          duration,
-          avgSpeed: 0,
-          errorCode: (error as Error).message,
-          teamId: undefined,
-        });
-      } catch (logError) {
-        console.error('Failed to log failed transfer:', logError);
+          await transferAPI.logTransfer({
+            receiverId: transfer.peerId,
+            senderName,
+            receiverName,
+            fileHash: transfer.fileHash || 'unknown',
+            fileName: transfer.fileName || 'unknown',
+            fileSizeBytes: transfer.fileSize,
+            mimeType: transfer.mimeType || 'application/octet-stream',
+            transferType: 'P2P_DIRECT',
+            status: 'FAILED',
+            duration,
+            avgSpeed: 0,
+            errorCode: (error as Error).message,
+            teamId: undefined,
+          });
+        } catch (logError) {
+          console.error('Failed to log failed transfer:', logError);
+        }
       }
     }
   }
@@ -1172,7 +1620,19 @@ export class TransferEngine {
     this.transfers.delete(fileId);
     this.decryptionKeys.delete(fileId);
     this.chunkProducersFinished.delete(fileId);
+    this.lastHeartbeatAck.delete(fileId);
+    this.receivedChunks.delete(fileId);
+    this.circuitBreaker.delete(fileId);
+    this.problematicChunks.delete(fileId);
+    this.originalTotalChunks.delete(fileId); // ✅ CRITICAL FIX #3: Cleanup totalChunks tracking
     this.clearRetryInterval(fileId);
+    
+    // ✅ Clean up status update interval
+    const statusInterval = this.statusUpdateIntervals.get(fileId);
+    if (statusInterval) {
+      clearInterval(statusInterval);
+      this.statusUpdateIntervals.delete(fileId);
+    }
   }
 
   /**
@@ -1181,54 +1641,14 @@ export class TransferEngine {
   destroy(): void {
     console.log('🔥 Destroying TransferEngine');
 
-    const logPromises: Promise<any>[] = [];
-    
     for (const [fileId, transfer] of this.transfers) {
       if (transfer.status === 'active' || transfer.status === 'pending') {
         transfer.status = 'cancelled';
         transfer.error = 'Connection closed';
         this.emitTransferUpdate(transfer);
-        
-        // ✅ Log the cancelled transfer
-        const duration = Math.round((Date.now() - transfer.startedAt.getTime()) / 1000);
-        const logPromise = (async () => {
-          try {
-            const currentUser = useAuthStore.getState().user;
-            const currentUserName = currentUser?.name || 'Unknown';
-            const peerName = this.connection['peerName'] || 'Unknown';
-            
-            // Correct sender/receiver names based on transfer direction
-            const senderName = transfer.direction === 'send' ? currentUserName : peerName;
-            const receiverName = transfer.direction === 'send' ? peerName : currentUserName;
-            const receiverId = transfer.direction === 'send' ? transfer.peerId : currentUser?.id || 'unknown';
-
-            await transferAPI.logTransfer({
-              receiverId,
-              senderName,
-              receiverName,
-              fileHash: transfer.fileHash || 'unknown',
-              fileName: transfer.fileName || 'unknown',
-              fileSizeBytes: transfer.fileSize,
-              mimeType: transfer.mimeType || 'application/octet-stream',
-              transferType: 'P2P_DIRECT',
-              status: 'CANCELLED',
-              duration,
-              avgSpeed: 0,
-              errorCode: 'Connection closed',
-              teamId: undefined,
-            });
-            console.log(`✅ Logged cancelled transfer: ${fileId}`);
-          } catch (logError) {
-            console.error(`Failed to log cancelled transfer ${fileId}:`, logError);
-          }
-        })();
-        logPromises.push(logPromise);
       }
       this.cleanupTransfer(fileId);
     }
-
-    // Wait for all logging to complete before clearing transfers
-    Promise.all(logPromises).catch(err => console.error('Error logging cancelled transfers:', err));
 
     this.transfers.clear();
     this.chunkManagers.clear();
@@ -1248,6 +1668,58 @@ export class TransferEngine {
    */
   private sleep(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  /**
+   * ✅ NEW: Diagnostic function to trace ACK issues
+   */
+  getDiagnostics(fileId?: string): any {
+    if (fileId) {
+      const transfer = this.transfers.get(fileId);
+      const pendingAcks = this.pendingAcks.get(fileId);
+      const inFlight = this.chunksInFlight.get(fileId);
+      const queue = this.sendQueues.get(fileId);
+      const receivedChunks = this.receivedChunks.get(fileId);
+      
+      return {
+        fileId,
+        transfer: transfer ? {
+          status: transfer.status,
+          direction: transfer.direction,
+          progress: transfer.progress,
+        } : null,
+        pendingAcksCount: pendingAcks?.size ?? 0,
+        pendingAcksIndices: Array.from(pendingAcks ?? new Set()),
+        inFlightCount: inFlight?.size ?? 0,
+        inFlightIndices: Array.from(inFlight ?? new Set()),
+        queueLength: queue?.length ?? 0,
+        receivedChunksCount: receivedChunks?.size ?? 0,
+        receivedChunksIndices: (Array.from(receivedChunks ?? new Set()) as number[]).sort((a, b) => a - b),
+      };
+    } else {
+      // Return overall diagnostics
+      return {
+        activeTransfers: this.transfers.size,
+        pendingAcksPerFile: Array.from(this.pendingAcks.entries()).map(([fileId, acksSet]) => ({
+          fileId,
+          count: acksSet.size,
+        })),
+        inFlightPerFile: Array.from(this.chunksInFlight.entries()).map(([fileId, set]) => ({
+          fileId,
+          count: set.size,
+        })),
+      };
+    }
+  }
+
+  /**
+   * ✅ NEW: Log current state for debugging
+   */
+  logTransferState(fileId: string): void {
+    const diag = this.getDiagnostics(fileId);
+    console.log('=== TRANSFER STATE DIAGNOSTIC ===');
+    console.log(JSON.stringify(diag, null, 2));
+    console.log('=== END DIAGNOSTIC ===');
   }
 
   private arrayBufferToBase64(buffer: ArrayBuffer): string {

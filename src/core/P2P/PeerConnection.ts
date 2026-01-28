@@ -22,11 +22,11 @@ export class PeerConnection extends EventEmitter {
   private dataChannels: RTCDataChannel[] = [];
   private pendingIceCandidates: RTCIceCandidateInit[] = [];
   private sendQueues: Array<Array<string | ArrayBuffer | Blob>> = [[]]; // ✅ FIX: Initialize with empty queue
-  private pendingChunkMetadata: Map<string, any> = new Map(); // ✅ FIX: Use Map keyed by fileId#chunkIndex to prevent data race with parallel channels
-  private readonly MAX_SEND_QUEUE = 800; // Réduit de 1000 - synchroniser sender/receiver
+  private pendingChunkMetadata: any = null;
+  private readonly MAX_SEND_QUEUE = 20; // ✅ CRITICAL FIX #2: Match TransferEngine.MAX_CONCURRENT_CHUNKS to sync flow control
   private readonly MAX_PENDING_ICE = 200;
-  private readonly NUM_DATA_CHANNELS = 6; // Reduced from 12 to 6 to reduce overhead
-  private readonly MAX_BUFFER_SIZE = 90 * 1024 * 1024; // Réduit de 100MB à 90MB
+  private readonly NUM_DATA_CHANNELS = 12; // ⚡ Optimized for parallelism
+  private readonly MAX_BUFFER_SIZE = 100 * 1024 * 1024; // ⚡ Increased for better throughput
   private channelIndex = 0;
   private connectionTimeoutMs: number;
   private maxRetries: number;
@@ -40,6 +40,11 @@ export class PeerConnection extends EventEmitter {
   private connectionTimeout: NodeJS.Timeout | null = null;
   private lastHeartbeatReceived: number = Date.now();
   private remoteDescriptionPending: boolean = false; // ✅ FIX: Prevent duplicate answer handling
+  
+  // 🔧 FRAGMENTATION CONSTANTS: Prevent WebRTC buffer overflow after 45MB
+  private readonly FRAGMENT_SIZE = 32 * 1024; // 32KB fragments to avoid 16MB buffer saturation
+  private readonly FRAGMENT_HEADER_SIZE = 20; // [ChunkID:4][TotalChunks:4][OriginalSize:4][FragmentID:4][TotalFragments:4]
+  private fragmentBuffers: Map<string, Map<number, ArrayBuffer>> = new Map(); // Store reassembled fragments
 
   constructor(options: PeerConnectionOptions) {
     super();
@@ -67,21 +72,58 @@ export class PeerConnection extends EventEmitter {
   }
 
   /**
+   * Valider et filtrer les serveurs ICE
+   * Élimine les serveurs TURN sans credentials (qui causent des erreurs)
+   */
+  private validateIceServers(iceServers: any[]): any[] {
+    if (!iceServers || !Array.isArray(iceServers)) {
+      return [];
+    }
+
+    return iceServers.filter((server: any) => {
+      // Normaliser les URLs
+      const urls = Array.isArray(server.urls) ? server.urls : [server.urls];
+      
+      // Vérifier si c'est un serveur TURN
+      const isTurn = urls.some((url: string) => 
+        typeof url === 'string' && url.toLowerCase().startsWith('turn')
+      );
+
+      if (isTurn) {
+        // Filtrer les serveurs TURN sans credentials
+        if (!server.username || !server.credential) {
+          console.warn(
+            `🚫 Filtering TURN server without credentials: ${urls[0]}`
+          );
+          return false;
+        }
+        console.log(`✅ TURN server with credentials: ${urls[0]}`);
+      } else {
+        console.log(`✅ STUN server accepted: ${urls[0]}`);
+      }
+
+      return true;
+    });
+  }
+
+  /**
    * Initialiser la connexion
    */
   async initialize(): Promise<void> {
-    console.log(`🔗 Initializing peer connection with ${this.peerName}`);
-
     try {
       let rtcConfig: RTCConfiguration = RTC_CONFIGURATION;
       try {
         const socketClient = getSocketClient();
-        const iceServers = await socketClient.getIceServers();
+        let iceServers = await socketClient.getIceServers();
         if (iceServers && iceServers.length > 0) {
-          rtcConfig = { ...RTC_CONFIGURATION, iceServers } as RTCConfiguration;
-          console.log('📡 Using ICE servers from signaling server:', iceServers.map((s: any) => 
-            typeof s.urls === 'string' ? s.urls : s.urls[0]
-          ).join(', '));
+          // 🔧 Valider et filtrer les serveurs ICE (enlever TURN sans credentials)
+          iceServers = this.validateIceServers(iceServers);
+          
+          if (iceServers.length > 0) {
+            rtcConfig = { ...RTC_CONFIGURATION, iceServers } as RTCConfiguration;
+          } else {
+            console.warn('⚠️ No valid ICE servers after filtering, using defaults');
+          }
         }
       } catch (err) {
         console.warn('Failed to fetch ICE servers from signaling, using default', err);
@@ -95,21 +137,13 @@ export class PeerConnection extends EventEmitter {
         this.createDataChannel();
       } else {
         this.peerConnection.ondatachannel = (event) => {
-          console.log('📥 Data channel received:', event.channel.label);
           this.dataChannels.push(event.channel);
           this.sendQueues.push([]);
           this.setupDataChannelHandler(event.channel);
           if (this.dataChannels.length === this.NUM_DATA_CHANNELS) {
-            console.log('✅ All data channels received');
             this.emit('datachannel:open');
           }
         };
-      }
-
-      // ⏸️ Don't flush ICE candidates yet - wait until remote description is set
-      // This will happen after offer/answer exchange completes
-      if (this.pendingIceCandidates.length > 0) {
-        console.log(`⏳ ${this.pendingIceCandidates.length} ICE candidates queued, will apply after remote description`);
       }
 
       this.updateState('connecting');
@@ -128,8 +162,6 @@ export class PeerConnection extends EventEmitter {
     if (!this.peerConnection) {
       throw new Error('Peer connection not initialized');
     }
-
-    console.log('📤 Creating offer...');
 
     const offer = await this.peerConnection.createOffer({
       offerToReceiveAudio: false,
@@ -300,9 +332,16 @@ export class PeerConnection extends EventEmitter {
    * Envoyer des données
    */
   send(data: string | ArrayBuffer | Blob): void {
-    if (this.dataChannels.length === 0 || !this.dataChannels.some(ch => ch.readyState === 'open')) {
-      // Queue the message for later send when a data channel opens.
-      console.warn('No data channels open, queueing message');
+    if (this.dataChannels.length === 0) {
+      console.warn('❌ No data channels available (length=0)');
+      return;
+    }
+
+    const openChannels = this.dataChannels.filter(ch => ch.readyState === 'open');
+    if (openChannels.length === 0) {
+      // Log channel states for debugging
+      const states = this.dataChannels.map((ch, i) => `${ch.label}:${ch.readyState}`).join(', ');
+      console.warn(`❌ No data channels open. States: [${states}], queueing message`);
       // Use the first queue for general messages
       if (!this.sendQueues[0]) this.sendQueues[0] = []; // ✅ FIX: Safety check
       if (this.sendQueues[0].length >= this.MAX_SEND_QUEUE) {
@@ -316,8 +355,20 @@ export class PeerConnection extends EventEmitter {
     // Use round-robin for general sends
     const channel = this.dataChannels[this.channelIndex % this.dataChannels.length];
     this.channelIndex++;
+    
+    // ✅ DEBUG: Check if this is an ACK message
+    let isAckMessage = false;
+    try {
+      const parsedData = typeof data === 'string' ? JSON.parse(data) : null;
+      isAckMessage = parsedData?.type === 'ack';
+    } catch (e) {
+      // Not JSON, probably binary data
+    }
 
     if (channel.readyState !== 'open') {
+      if (isAckMessage) {
+        console.warn(`⚠️ ACK message queued (channel not ready): buffered amount: ${channel.bufferedAmount}, queue length: ${this.sendQueues[this.dataChannels.indexOf(channel)]?.length || 0}`);
+      }
       // Queue on the channel's queue
       const queueIndex = this.dataChannels.indexOf(channel);
       if (queueIndex >= 0) {
@@ -333,6 +384,9 @@ export class PeerConnection extends EventEmitter {
 
     // Check if channel buffer is too full before sending
     if (channel.bufferedAmount > this.MAX_BUFFER_SIZE) {
+      if (isAckMessage) {
+        console.warn(`⚠️ ACK message queued (buffer too full): buffered amount: ${channel.bufferedAmount}, MAX: ${this.MAX_BUFFER_SIZE}`);
+      }
       // Queue the message if buffer is too full
       const queueIndex = this.dataChannels.indexOf(channel);
       if (queueIndex >= 0) {
@@ -348,8 +402,14 @@ export class PeerConnection extends EventEmitter {
 
     try {
       channel.send(data as any);
+      if (isAckMessage) {
+        console.log(`✅ ACK physically sent on channel (buffered after: ${channel.bufferedAmount})`);
+      }
     } catch (error) {
-      console.error('Failed to send data:', error);
+      console.error(`Failed to send data:`, error);
+      if (isAckMessage) {
+        console.error(`❌ ACK send failed: ${(error as any)?.message}`);
+      }
       // Queue on the channel's queue
       const queueIndex = this.dataChannels.indexOf(channel);
       if (queueIndex >= 0) {
@@ -370,20 +430,52 @@ export class PeerConnection extends EventEmitter {
   sendMessage(message: Message): void {
     try {
       const payload = JSON.stringify(message);
+      
+      // ✅ DEBUG: Log ACK messages for diagnostics
+      if (message.type === 'ack') {
+        const ackData = message.data as any;
+        console.log(`📤 PeerConnection.sendMessage: Sending ACK for chunk ${ackData?.index} of ${ackData?.fileId}`);
+      }
+      
       this.send(payload);
+      
+      // ✅ DEBUG: Confirm send success for ACKs
+      if (message.type === 'ack') {
+        const ackData = message.data as any;
+        console.log(`✅ ACK successfully queued/sent for chunk ${ackData?.index}`);
+      }
     } catch (error) {
-      console.error('Failed to serialize/send message:', error);
+      console.error(`Failed to serialize/send message of type '${message?.type}':`, error);
       this.emit('error', error);
     }
   }
 
   /**
-   * Envoyer un chunk avec métadonnées et données binaires
+   * 🔧 FIXED: Envoyer un chunk avec fragmentation pour éviter débordement WebRTC buffer
+   * Fragmente automatiquement les messages > 32KB en plusieurs fragments
    */
   sendChunk(metadata: any, data: ArrayBuffer): void {
     if (this.dataChannels.length === 0) {
       console.error('No data channels available');
       return;
+    }
+
+    // ✅ CRITICAL: Validate metadata BEFORE sending
+    if (!metadata || metadata.totalChunks === undefined || metadata.totalChunks === 0 || metadata.totalChunks < 0) {
+      console.error(`❌ CRITICAL: Invalid metadata.totalChunks for chunk ${metadata?.index}: ${metadata?.totalChunks}`);
+      console.error(`   Full metadata:`, metadata);
+      return;
+    }
+
+    // 🔍 DEBUG: Log chunks 68-73 to verify metadata
+    if (metadata.index === 68 || metadata.index === 69 || metadata.index === 70 || 
+        metadata.index === 71 || metadata.index === 72 || metadata.index === 73) {
+      console.log(`🔍 PeerConnection.sendChunk for chunk ${metadata.index}:`, {
+        index: metadata.index,
+        totalChunks: metadata.totalChunks,
+        dataSize: data.byteLength,
+        hash: metadata.hash?.substring(0, 16) + '...',
+      });
     }
 
     // Choose a channel for this chunk using round-robin distribution
@@ -392,56 +484,104 @@ export class PeerConnection extends EventEmitter {
     const channel = this.dataChannels[channelIndex];
 
     try {
-      // ✅ FIX: Embed FileID in packet header to properly correlate with metadata
-      // Header format: [FileID_LEN: 2 bytes][FileID: N bytes][ChunkID: 4 bytes][TotalChunks: 4 bytes][Size: 4 bytes][Data: N bytes]
-      const fileId = metadata.fileId;
-      const fileIdBytes = new TextEncoder().encode(fileId);
-      const fileIdLen = fileIdBytes.length;
-
-      const headerSize = 2 + fileIdLen + 4 + 4 + 4; // FileIDLen + FileID + ChunkID + TotalChunks + Size
-      const packetSize = headerSize + data.byteLength;
-      const packet = new ArrayBuffer(packetSize);
-      const view = new DataView(packet);
-
-      let offset = 0;
-
-      // Write FileID length (2 bytes)
-      view.setUint16(offset, fileIdLen, true);
-      offset += 2;
-
-      // Write FileID bytes
-      new Uint8Array(packet, offset, fileIdLen).set(fileIdBytes);
-      offset += fileIdLen;
-
-      // Write ChunkID (4 bytes)
-      view.setUint32(offset, metadata.index, true);
-      offset += 4;
-
-      // Write TotalChunks (4 bytes)
-      view.setUint32(offset, metadata.totalChunks, true);
-      offset += 4;
-
-      // Write DataSize (4 bytes)
-      view.setUint32(offset, data.byteLength, true);
-      offset += 4;
-
-      // Copy actual data after header
-      new Uint8Array(packet, offset).set(new Uint8Array(data));
-
-      // Send metadata separately (for quick reception, contains hash, encryption metadata)
-      const metadataMessage = JSON.stringify({ type: 'chunk_metadata', data: metadata });
-
-      if (channel.readyState === 'open') {
-        channel.send(metadataMessage);
-        channel.send(packet);
+      // ✅ CRITICAL FIX: Sender sends metadata separately, binary data contains ONLY the chunk data
+      // No need to prepend headers to the binary data - metadata already sent as JSON message
+      
+      const totalChunks = metadata.totalChunks || 0;
+      const packetSize = data.byteLength;
+      
+      // 🔧 FIX: Fragment large packets to prevent buffer overflow after ~45MB
+      if (packetSize > this.FRAGMENT_SIZE) {
+        // 🔧 CRITICAL: Send metadata FIRST for fragmented chunks!
+        const metadataMessage = JSON.stringify({ type: 'chunk_metadata', data: metadata });
+        
+        if (channel.readyState === 'open') {
+          channel.send(metadataMessage);
+        } else {
+          const queue = this.sendQueues[channelIndex];
+          queue.push(metadataMessage);
+        }
+        
+        // Large message - split into fragments
+        const dataPayload = new Uint8Array(data);
+        const totalFragments = Math.ceil(data.byteLength / this.FRAGMENT_SIZE);
+        
+        if (metadata.index > totalChunks - 10) {
+          console.log(`📤 FRAGMENTATION: chunk ${metadata.index}/${totalChunks}, ${dataPayload.byteLength} bytes → ${totalFragments} fragments of max ${this.FRAGMENT_SIZE} bytes`);
+        }
+        
+        for (let fragId = 0; fragId < totalFragments; fragId++) {
+          const start = fragId * this.FRAGMENT_SIZE;
+          const end = Math.min(start + this.FRAGMENT_SIZE, data.byteLength);
+          // ⚡ CRITICAL FIX: Use Uint8Array.slice() which creates a NEW buffer, not a view
+          const fragData = new Uint8Array(dataPayload.slice(start, end));
+          
+          // Create fragment packet: [Magic:4][ChunkID:4][TotalChunks:4][OriginalSize:4][FragmentID:4][TotalFragments:4][Data:N]
+          const fragPacket = new ArrayBuffer(24 + fragData.byteLength);
+          const fragView = new DataView(fragPacket);
+          
+          // ✅ CRITICAL: Add magic header "FRAG" (0x46524147) to identify fragments
+          const FRAGMENT_MAGIC = 0x46524147;
+          fragView.setUint32(0, FRAGMENT_MAGIC, true); // Magic: "FRAG"
+          fragView.setUint32(4, metadata.index, true); // ChunkID
+          fragView.setUint32(8, metadata.totalChunks, true); // Total chunks in file
+          fragView.setUint32(12, data.byteLength, true); // Original full size
+          fragView.setUint32(16, fragId, true); // Fragment ID
+          fragView.setUint32(20, totalFragments, true); // Total fragments
+          new Uint8Array(fragPacket, 24).set(fragData);
+          
+          // 🔍 DEBUG: For chunks 68-73, log each fragment
+          if (metadata.index === 68 || metadata.index === 69 || metadata.index === 70 || 
+              metadata.index === 71 || metadata.index === 72 || metadata.index === 73) {
+            console.log(`🔍 Fragment ${fragId}/${totalFragments} for chunk ${metadata.index}:`, {
+              magic: fragView.getUint32(0, true).toString(16),
+              chunkId: fragView.getUint32(4, true),
+              totalChunks: fragView.getUint32(8, true),
+              originalSize: fragView.getUint32(12, true),
+              fragmentId: fragView.getUint32(16, true),
+              totalFragments: fragView.getUint32(20, true),
+              fragDataSize: fragData.byteLength,
+            });
+          }
+          
+          if (channel.readyState === 'open') {
+            channel.send(fragPacket);
+            if (metadata.index > totalChunks - 10) {
+              console.log(`   → Fragment ${fragId + 1}/${totalFragments}: ${fragData.byteLength} bytes sent`);
+            }
+          }
+        }
       } else {
-        // Queue on the channel's queue
-        const queue = this.sendQueues[channelIndex];
-        queue.push(metadataMessage);
-        queue.push(packet);
-      }
+        // Small message - send normally
+        // Send metadata separately first (as JSON message)
+        const metadataMessage = JSON.stringify({ type: 'chunk_metadata', data: metadata });
 
-      console.log(`📤 Sent chunk ${metadata.index}/${metadata.totalChunks} on channel ${channelIndex} (${packetSize} bytes)`);
+        if (channel.readyState === 'open') {
+          channel.send(metadataMessage);
+          
+          // ⚠️ Check channel buffer before sending
+          const bufferBefore = channel.bufferedAmount;
+          // Send raw binary data (no header, since metadata was already sent)
+          channel.send(data);
+          const bufferAfter = channel.bufferedAmount;
+          
+          if (metadata.index >= 68 && metadata.index <= 78) {
+            console.log(`📤 Sent chunk ${metadata.index}/${metadata.totalChunks} on channel ${this.channelIndex % this.dataChannels.length}`);
+            console.log(`   Metadata sent first (JSON)`);
+            console.log(`   Binary data: ${data.byteLength} bytes`);
+            console.log(`   Channel buffer: before=${bufferBefore}, after=${bufferAfter}`);
+          }
+        } else {
+          // Queue on the channel's queue
+          const queue = this.sendQueues[this.channelIndex % this.dataChannels.length];
+          queue.push(metadataMessage);
+          queue.push(data);
+        }
+
+        if (metadata.index < 68 || metadata.index > 78) {
+          console.log(`📤 Sent chunk ${metadata.index}/${metadata.totalChunks} on channel ${this.channelIndex % this.dataChannels.length} (${data.byteLength} bytes)`);
+        }
+      }
     } catch (error) {
       console.error('Failed to send chunk:', error);
       this.emit('error', error);
@@ -759,6 +899,13 @@ export class PeerConnection extends EventEmitter {
 
     channel.onmessage = (event) => {
       try {
+        // 🔍 Log every received message to diagnose connection issues
+        if (event.data instanceof ArrayBuffer) {
+          console.log(`📨 ${channel.label} received binary data: ${event.data.byteLength} bytes`);
+        } else {
+          const msgStr = typeof event.data === 'string' ? event.data : JSON.stringify(event.data);
+          console.log(`📨 ${channel.label} received message: ${msgStr.substring(0, 100)}`);
+        }
         this.handleMessage(event.data);
       } catch (err) {
         console.error('Unhandled error in message handler:', err);
@@ -812,9 +959,43 @@ export class PeerConnection extends EventEmitter {
             break;
 
           case 'chunk_metadata':
-            // ✅ FIX: Store metadata in a Map indexed by fileId#chunkIndex to prevent race conditions
-            const metaKey = `${message.data.fileId}#${message.data.index}`;
-            this.pendingChunkMetadata.set(metaKey, message.data);
+            // ✅ CRITICAL: Validate metadata before accepting
+            if (message.data && message.data.fileId && message.data.totalChunks) {
+              // 🔍 DEBUG: Log problematic chunks
+              if (message.data.index === 68 || message.data.index === 69 || message.data.index === 70 || 
+                  message.data.index === 71 || message.data.index === 72 || message.data.index === 73 ||
+                  message.data.index === 77 || message.data.index === 78) {
+                console.log(`🔍 Received chunk_metadata for chunk ${message.data.index}:`, {
+                  fileId: message.data.fileId,
+                  totalChunks: message.data.totalChunks,
+                  hash: message.data.hash?.substring(0, 16) + '...',
+                });
+              }
+              
+              // Validation: totalChunks should be reasonable (between 1 and 10,000,000 for a 1.28TB file at 128KB chunks)
+              if (message.data.totalChunks < 1 || message.data.totalChunks > 10000000) {
+                console.error(`❌ INVALID: chunk_metadata has unreasonable totalChunks: ${message.data.totalChunks}`);
+                // Don't set pending metadata - skip this chunk
+                break;
+              }
+              
+              // ✅ CRITICAL FIX: When receiving metadata for a chunk that might be retried,
+              // clear any old fragments from previous attempts to prevent mixing
+              // This happens when sender retries a chunk after timeout
+              const fragmentKey = `${message.data.index}_${message.data.totalChunks}`;
+              if (this.fragmentBuffers.has(fragmentKey)) {
+                console.log(`🔧 CLEAR RETRY: Clearing ${this.fragmentBuffers.get(fragmentKey)!.size} old fragments for chunk ${message.data.index} (retry detected)`);
+                this.fragmentBuffers.delete(fragmentKey);
+              }
+              
+              // 📥 Log metadata reception with encryption info
+              if (message.data.encryptionMetadata) {
+                console.log(`📥 [CHUNK_METADATA] Chunk ${message.data.index}: IV = ${message.data.encryptionMetadata.iv.substring(0, 16)}...`);
+              } else if (message.data.encrypted) {
+                console.warn(`⚠️ [CHUNK_METADATA] Chunk ${message.data.index} is marked encrypted but NO encryptionMetadata!`);
+              }
+            }
+            this.pendingChunkMetadata = message.data;
             break;
 
           case 'chunk':
@@ -842,6 +1023,11 @@ export class PeerConnection extends EventEmitter {
             this.emit('heartbeat_ack', message.data);
             break;
 
+          case 'transfer_status':
+            // ✅ NEW: Handle receiver status updates
+            this.emit('transfer_status', message.data);
+            break;
+
           case 'transfer_sync':
             this.emit('transfer_sync', message.data);
             break;
@@ -858,70 +1044,120 @@ export class PeerConnection extends EventEmitter {
             this.emit('data', message);
         }
       } else {
-        // Handle binary data (chunk data following chunk_metadata)
-        // ✅ FIX: Parse FileID from packet header to correctly match with metadata
-        if (data.byteLength < 10) {
-          console.error('Invalid chunk data: too small for header');
-          return;
-        }
-
-        let offset = 0;
-        const view = new DataView(data);
-
-        // ✅ Read FileID length (2 bytes)
-        const fileIdLen = view.getUint16(offset, true);
-        offset += 2;
-
-        // ✅ Check if we have enough data for FileID
-        if (data.byteLength < offset + fileIdLen + 12) {
-          console.error('Invalid chunk data: incomplete header');
-          return;
-        }
-
-        // ✅ Read FileID (variable length string)
-        const fileIdBytes = new Uint8Array(data, offset, fileIdLen);
-        const fileId = new TextDecoder().decode(fileIdBytes);
-        offset += fileIdLen;
-
-        // ✅ Read ChunkID (4 bytes)
-        const chunkId = view.getUint32(offset, true);
-        offset += 4;
-
-        // ✅ Read TotalChunks (4 bytes)
-        const totalChunks = view.getUint32(offset, true);
-        offset += 4;
-
-        // ✅ Read DataSize (4 bytes)
-        const dataSize = view.getUint32(offset, true);
-        offset += 4;
-
-        // ✅ Validate we have the complete chunk data
-        if (data.byteLength < offset + dataSize) {
-          console.error(`Invalid chunk data: size mismatch (expected ${offset + dataSize}, got ${data.byteLength})`);
-          return;
-        }
-
-        // ✅ Extract actual data after header
-        const actualData = data.slice(offset, offset + dataSize);
-
-        // ✅ Look up metadata from Map using fileId#chunkIndex key
-        const metaKey = `${fileId}#${chunkId}`;
-        const metadata = this.pendingChunkMetadata.get(metaKey);
-        this.pendingChunkMetadata.delete(metaKey); // Clean up after use
-
-        if (metadata) {
-          const chunkData = {
-            ...metadata,
-            index: chunkId,
-            totalChunks,
-            data: actualData,
-          };
-
-          console.log(`📥 Received chunk ${chunkId}/${totalChunks} (${actualData.byteLength} bytes) for ${fileId}`);
-          this.emit('chunk', chunkData);
+        // Handle binary data (chunk data or fragments)
+        // ✅ DEBUG: Log all binary data arrivals
+        if (this.pendingChunkMetadata) {
+          const chunkIndex = this.pendingChunkMetadata.index;
+          if (chunkIndex >= 68 && chunkIndex <= 78) {
+            console.log(`📥 RECEIVED BINARY DATA: chunk ${chunkIndex}, ${data.byteLength} bytes`);
+          }
         } else {
-          console.warn(`⚠️ Received chunk data for unknown metadata: ${metaKey}. Buffering may help.`);
-          this.emit('binarydata', data);
+          console.warn(`⚠️ BINARY DATA arrived but NO pendingChunkMetadata! Size: ${data.byteLength} bytes`);
+        }
+        
+        if (this.pendingChunkMetadata) {
+          // 🔧 FIXED: Detect and reassemble fragmented chunks
+          // Check if this is a fragment message with magic header (FRAG: 0x46524147 = "FRAG")
+          const FRAGMENT_MAGIC = 0x46524147;
+          const isMaybeFragment = data.byteLength >= 20;
+          let isFragment = false;
+          
+          if (isMaybeFragment) {
+            const view = new DataView(data);
+            const magic = view.getUint32(0, true);
+            isFragment = (magic === FRAGMENT_MAGIC);
+          }
+          
+          if (isFragment) {
+            // ✅ FRAGMENTED MESSAGE: Parse fragment header
+            const view = new DataView(data);
+            const magic = view.getUint32(0, true); // 0x46524147 = "FRAG"
+            const chunkId = view.getUint32(4, true);
+            const totalChunks = view.getUint32(8, true);
+            const originalSize = view.getUint32(12, true);
+            const fragmentId = view.getUint32(16, true);
+            const totalFragments = view.getUint32(20, true);
+            
+            // ✅ CRITICAL: Validate fragment metadata matches pendingChunkMetadata
+            if (this.pendingChunkMetadata && this.pendingChunkMetadata.totalChunks !== totalChunks) {
+              console.error(`❌ CRITICAL: Fragment header totalChunks (${totalChunks}) MISMATCH with pending metadata totalChunks (${this.pendingChunkMetadata.totalChunks})!`);
+              console.error(`   This indicates sender is sending old/stale metadata!`);
+              console.error(`   Chunk ${chunkId}: expected totalChunks=${this.pendingChunkMetadata.totalChunks}, got ${totalChunks}`);
+              // Don't process this fragment - it's corrupted
+              this.pendingChunkMetadata = null;
+              return;
+            }
+            
+            // This is a fragmented chunk - reassemble
+            const fragmentKey = `${chunkId}_${totalChunks}`;
+            if (!this.fragmentBuffers.has(fragmentKey)) {
+              this.fragmentBuffers.set(fragmentKey, new Map());
+            }
+            const fragments = this.fragmentBuffers.get(fragmentKey)!;
+            
+            // Store this fragment (skip header bytes to get actual data)
+            const fragmentData = data.slice(24);
+            fragments.set(fragmentId, fragmentData);
+            
+            if (chunkId > totalChunks - 10) {
+              console.log(`🔀 RECEIVED FRAGMENT: chunk ${chunkId}/${totalChunks}, fragment ${fragmentId + 1}/${totalFragments}, ${fragmentData.byteLength} bytes`);
+            }
+            
+            // Check if all fragments received
+            if (fragments.size === totalFragments) {
+              // Reassemble all fragments
+              const reassembled = new Uint8Array(originalSize);
+              let offset = 0;
+              for (let i = 0; i < totalFragments; i++) {
+                const fragData = fragments.get(i);
+                if (!fragData) {
+                  console.error(`Missing fragment ${i} for chunk ${chunkId}`);
+                  this.fragmentBuffers.delete(fragmentKey);
+                  this.pendingChunkMetadata = null;
+                  return;
+                }
+                reassembled.set(new Uint8Array(fragData), offset);
+                offset += fragData.byteLength;
+              }
+              
+              if (chunkId > totalChunks - 10) {
+                console.log(`✅ FRAGMENTS COMPLETE: chunk ${chunkId}/${totalChunks}, reassembled ${originalSize} bytes from ${totalFragments} fragments`);
+              }
+              
+              // Clean up and emit reassembled chunk
+              this.fragmentBuffers.delete(fragmentKey);
+              const chunkData = {
+                ...this.pendingChunkMetadata,
+                index: chunkId,
+                totalChunks,
+                data: reassembled.buffer,
+              };
+              
+              console.log(`📥 Received chunk ${chunkId}/${totalChunks} (${reassembled.byteLength} bytes)`);
+              this.emit('chunk', chunkData);
+              this.pendingChunkMetadata = null;
+            }
+          } else {
+            // ✅ NON-FRAGMENTED MESSAGE: This is just raw chunk data
+            const chunkData = {
+              ...this.pendingChunkMetadata,
+              data: data,
+            };
+            
+            console.log(`📥 Received chunk ${this.pendingChunkMetadata.index}/${this.pendingChunkMetadata.totalChunks} (${(data as ArrayBuffer).byteLength} bytes)`);
+            this.emit('chunk', chunkData);
+            this.pendingChunkMetadata = null;
+          }
+        } else {
+          // Binary data arrived but no pending metadata
+          console.warn(`⚠️ Binary data received but no pending metadata! Size: ${data.byteLength} bytes`);
+          // 🔍 DEBUG: Try to understand what's happening
+          console.warn(`   This could indicate:`);
+          console.warn(`   1. Metadata was lost/not received`);
+          console.warn(`   2. Order of arrival is wrong (binary came before metadata)`);
+          console.warn(`   3. Connection issue causing buffering`);
+          // Could be out-of-order fragments, store temporarily and wait for metadata
+          // For now, just log and ignore
         }
       }
     } catch (error) {
