@@ -1,117 +1,124 @@
 // frontend/src/app/public-transfer/[code]/page.tsx
 
-"use client"
+'use client';
 
-import React, { useState, useEffect } from 'react'
-import { useParams } from 'next/navigation'
-import { Download, Lock, AlertCircle, Loader2, Eye, EyeOff, FileText, Calendar, Shield, CheckCircle } from 'lucide-react'
-import transferLinkAPI from '@/core/services/api/transferLink.service'
+import React, { useState, useEffect } from 'react';
+import { useParams } from 'next/navigation';
+import {
+  Download,
+  Lock,
+  AlertCircle,
+  Loader2,
+  Eye,
+  EyeOff,
+  FileText,
+  Calendar,
+  Shield,
+  CheckCircle,
+} from 'lucide-react';
+import transferLinkAPI from '@/core/services/api/transferLink.service';
 
 interface TransferLinkData {
-  id: string
-  shortCode: string
-  fileName: string
-  fileSize: number
-  fileMimeType: string
-  password?: string
-  expiresAt?: string
-  maxDownloads?: number
-  downloads: number
-  createdAt: string
+  id: string;
+  shortCode: string;
+  fileName: string;
+  fileSize: number;
+  fileMimeType: string;
+  password?: string;
+  expiresAt?: string;
+  maxDownloads?: number;
+  downloads: number;
+  createdAt: string;
 }
 
 export default function PublicTransferPage() {
-  const params = useParams()
-  const code = (params?.code as string) || ''
+  const params = useParams();
+  const code = (params?.code as string) || '';
 
-  const [link, setLink] = useState<TransferLinkData | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError] = useState<string>('')
-  const [isProtected, setIsProtected] = useState(false)
-  const [password, setPassword] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
-  const [verifying, setVerifying] = useState(false)
-  const [verified, setVerified] = useState(false)
-  const [downloading, setDownloading] = useState(false)
+  const [link, setLink] = useState<TransferLinkData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string>('');
+  const [isProtected, setIsProtected] = useState(false);
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [verified, setVerified] = useState(false);
+  const [downloading, setDownloading] = useState(false);
 
   // Charger les infos du lien
   useEffect(() => {
     const loadLink = async () => {
       try {
-        setLoading(true)
-        const linkData = await transferLinkAPI.getPublicTransferInfo(code)
+        setLoading(true);
+        const linkData = await transferLinkAPI.getPublicTransferInfo(code);
         setLink({
           ...linkData,
           fileSize: Number(linkData.fileSize),
-          expiresAt: linkData.expiresAt
-            ? new Date(linkData.expiresAt).toISOString()
-            : undefined,
-        } as any)
-        setIsProtected(!!linkData.password)
+          expiresAt: linkData.expiresAt ? new Date(linkData.expiresAt).toISOString() : undefined,
+        } as any);
+        setIsProtected(!!linkData.password);
 
         // Vérifier que le lien est valide
-        const isValid = await transferLinkAPI.validateTransferLink(code)
+        const isValid = await transferLinkAPI.validateTransferLink(code);
         if (!isValid) {
-          setError('Ce lien a expiré ou a atteint sa limite de téléchargements')
+          setError('Ce lien a expiré ou a atteint sa limite de téléchargements');
         }
       } catch (err) {
-        setError(
-          err instanceof Error ? err.message : 'Erreur lors du chargement du lien'
-        )
+        setError(err instanceof Error ? err.message : 'Erreur lors du chargement du lien');
       } finally {
-        setLoading(false)
+        setLoading(false);
       }
-    }
+    };
 
-    loadLink()
-  }, [code])
+    loadLink();
+  }, [code]);
 
   const handleVerifyPassword = async (e: React.FormEvent) => {
-    e.preventDefault()
-    setVerifying(true)
-    setError('')
+    e.preventDefault();
+    setVerifying(true);
+    setError('');
 
     try {
-      const isValid = await transferLinkAPI.verifyTransferPassword(code, password)
+      const isValid = await transferLinkAPI.verifyTransferPassword(code, password);
       if (isValid) {
-        setVerified(true)
+        setVerified(true);
       } else {
-        setError('Mot de passe incorrect')
-        setPassword('')
+        setError('Mot de passe incorrect');
+        setPassword('');
       }
     } catch (err) {
-      setError('Erreur lors de la vérification du mot de passe')
+      setError('Erreur lors de la vérification du mot de passe');
     } finally {
-      setVerifying(false)
+      setVerifying(false);
     }
-  }
+  };
 
   const handleDownload = async () => {
     try {
-      setDownloading(true)
-      window.location.href = `http://localhost:4000/api/public-links/${code}/file`
+      setDownloading(true);
+      window.location.href = `${process.env.NEXT_PUBLIC_API_URL}/api/public-links/${code}/file`;
     } catch (err) {
-      setError('Erreur lors du téléchargement')
+      setError('Erreur lors du téléchargement');
     } finally {
-      setTimeout(() => setDownloading(false), 2000)
+      setTimeout(() => setDownloading(false), 2000);
     }
-  }
+  };
 
   const formatFileSize = (bytes: number): string => {
-    if (bytes < 1024) return bytes + ' B'
-    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB'
-    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
-    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB'
-  }
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(2) + ' KB';
+    if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+    return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+  };
 
   const getFileIcon = (mimeType: string) => {
-    if (mimeType.startsWith('video/')) return '🎥'
-    if (mimeType.startsWith('image/')) return '🖼️'
-    if (mimeType.startsWith('audio/')) return '🎵'
-    if (mimeType.includes('pdf')) return '📕'
-    if (mimeType.includes('zip') || mimeType.includes('rar')) return '📦'
-    return '📄'
-  }
+    if (mimeType.startsWith('video/')) return '🎥';
+    if (mimeType.startsWith('image/')) return '🖼️';
+    if (mimeType.startsWith('audio/')) return '🎵';
+    if (mimeType.includes('pdf')) return '📕';
+    if (mimeType.includes('zip') || mimeType.includes('rar')) return '📦';
+    return '📄';
+  };
 
   if (loading) {
     return (
@@ -121,7 +128,7 @@ export default function PublicTransferPage() {
           <p className="text-gray-700 font-medium">Chargement du lien de partage...</p>
         </div>
       </div>
-    )
+    );
   }
 
   if (error && !link) {
@@ -143,7 +150,7 @@ export default function PublicTransferPage() {
           </a>
         </div>
       </div>
-    )
+    );
   }
 
   if (!link) {
@@ -151,7 +158,7 @@ export default function PublicTransferPage() {
       <div className="min-h-screen bg-linear-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
         <p className="text-gray-600 text-lg">Lien introuvable</p>
       </div>
-    )
+    );
   }
 
   // Si protégé par mot de passe et non vérifié
@@ -164,9 +171,7 @@ export default function PublicTransferPage() {
               <Lock className="w-12 h-12 text-blue-600" />
             </div>
           </div>
-          <h1 className="text-3xl font-bold text-center mb-3 text-gray-900">
-            Accès sécurisé
-          </h1>
+          <h1 className="text-3xl font-bold text-center mb-3 text-gray-900">Accès sécurisé</h1>
           <p className="text-gray-600 text-center mb-8 leading-relaxed">
             Ce fichier est protégé. Entrez le mot de passe pour y accéder.
           </p>
@@ -184,16 +189,14 @@ export default function PublicTransferPage() {
 
           <form onSubmit={handleVerifyPassword} className="space-y-5">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">
-                Mot de passe
-              </label>
+              <label className="block text-sm font-medium text-gray-700 mb-2">Mot de passe</label>
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => {
-                    setPassword(e.target.value)
-                    setError('')
+                    setPassword(e.target.value);
+                    setError('');
                   }}
                   placeholder="••••••••"
                   className="w-full px-4 py-3 pr-12 border-2 border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent text-gray-900 font-medium placeholder-gray-400 transition-all"
@@ -241,12 +244,12 @@ export default function PublicTransferPage() {
           </div>
         </div>
       </div>
-    )
+    );
   }
 
-  const isExpired = link.expiresAt && new Date(link.expiresAt) < new Date()
-  const isMaxDownloadsReached = link.maxDownloads && link.downloads >= link.maxDownloads
-  const canDownload = !isExpired && !isMaxDownloadsReached
+  const isExpired = link.expiresAt && new Date(link.expiresAt) < new Date();
+  const isMaxDownloadsReached = link.maxDownloads && link.downloads >= link.maxDownloads;
+  const canDownload = !isExpired && !isMaxDownloadsReached;
 
   // Page de téléchargement
   return (
@@ -285,28 +288,43 @@ export default function PublicTransferPage() {
             {link.expiresAt && (
               <div className="flex items-center gap-2 text-sm text-gray-700">
                 <Calendar size={16} className="text-indigo-600" />
-                <span>Expire le <strong>{new Date(link.expiresAt).toLocaleDateString('fr-FR', { 
-                  day: 'numeric', 
-                  month: 'long', 
-                  year: 'numeric',
-                  hour: '2-digit',
-                  minute: '2-digit'
-                })}</strong></span>
+                <span>
+                  Expire le{' '}
+                  <strong>
+                    {new Date(link.expiresAt).toLocaleDateString('fr-FR', {
+                      day: 'numeric',
+                      month: 'long',
+                      year: 'numeric',
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
+                  </strong>
+                </span>
               </div>
             )}
             {link.maxDownloads && (
               <div className="flex items-center gap-2 text-sm text-gray-700">
                 <Download size={16} className="text-purple-600" />
-                <span>Téléchargements : <strong>{link.downloads} / {link.maxDownloads}</strong></span>
+                <span>
+                  Téléchargements :{' '}
+                  <strong>
+                    {link.downloads} / {link.maxDownloads}
+                  </strong>
+                </span>
               </div>
             )}
             <div className="flex items-center gap-2 text-sm text-gray-700">
               <FileText size={16} className="text-green-600" />
-              <span>Créé le <strong>{new Date(link.createdAt).toLocaleDateString('fr-FR', {
-                day: 'numeric',
-                month: 'long', 
-                year: 'numeric'
-              })}</strong></span>
+              <span>
+                Créé le{' '}
+                <strong>
+                  {new Date(link.createdAt).toLocaleDateString('fr-FR', {
+                    day: 'numeric',
+                    month: 'long',
+                    year: 'numeric',
+                  })}
+                </strong>
+              </span>
             </div>
           </div>
         </div>
@@ -364,10 +382,11 @@ export default function PublicTransferPage() {
           <p className="text-xs text-center text-gray-700 leading-relaxed">
             <strong className="text-green-700">🔒 Transfert sécurisé P2P</strong>
             <br />
-            Le fichier est transféré directement en peer-to-peer. Aucun serveur n'a accès à vos données.
+            Le fichier est transféré directement en peer-to-peer. Aucun serveur n'a accès à vos
+            données.
           </p>
         </div>
       </div>
     </div>
-  )
+  );
 }

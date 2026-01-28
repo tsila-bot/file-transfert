@@ -1,105 +1,118 @@
-"use client"
+'use client';
 
-import React, { useState } from 'react'
-import { Upload, Copy, Check, Loader2, AlertCircle, Eye, EyeOff, Calendar, Download } from 'lucide-react'
-import transferLinkAPI from '@/core/services/api/transferLink.service'
-import { format, addDays } from 'date-fns'
-import { fr } from 'date-fns/locale'
+import React, { useState } from 'react';
+import {
+  Upload,
+  Copy,
+  Check,
+  Loader2,
+  AlertCircle,
+  Eye,
+  EyeOff,
+  Calendar,
+  Download,
+} from 'lucide-react';
+import transferLinkAPI from '@/core/services/api/transferLink.service';
+import { format, addDays } from 'date-fns';
+import { fr } from 'date-fns/locale';
 
 interface CreatePublicLinkFormProps {
-  onSuccess?: () => void
+  onSuccess?: () => void;
 }
 
 export default function CreatePublicLinkForm({ onSuccess }: CreatePublicLinkFormProps) {
-  const [step, setStep] = useState<'upload' | 'config' | 'result'>('upload')
-  const [file, setFile] = useState<File | null>(null)
-  const [dragActive, setDragActive] = useState(false)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string>('')
-  const [copied, setCopied] = useState(false)
+  const [step, setStep] = useState<'upload' | 'config' | 'result'>('upload');
+  const [file, setFile] = useState<File | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string>('');
+  const [copied, setCopied] = useState(false);
 
   // Configuration
-  const [usePassword, setUsePassword] = useState(false)
-  const [password, setPassword] = useState('')
-  const [showPassword, setShowPassword] = useState(false)
-  const [useExpiration, setUseExpiration] = useState(true)
-  const [expiresIn, setExpiresIn] = useState('7')
-  const [useDownloadLimit, setUseDownloadLimit] = useState(false)
-  const [maxDownloads, setMaxDownloads] = useState('5')
+  const [usePassword, setUsePassword] = useState(false);
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [useExpiration, setUseExpiration] = useState(true);
+  const [expiresIn, setExpiresIn] = useState('7');
+  const [useDownloadLimit, setUseDownloadLimit] = useState(false);
+  const [maxDownloads, setMaxDownloads] = useState('5');
 
   // Résultat
   const [createdLink, setCreatedLink] = useState<{
-    id: string
-    shortCode: string
-    shareUrl: string
-    fileName: string
-    fileSize: number
-    expiresAt?: string
-    maxDownloads?: number
-  } | null>(null)
+    id: string;
+    shortCode: string;
+    shareUrl: string;
+    fileName: string;
+    fileSize: number;
+    expiresAt?: string;
+    maxDownloads?: number;
+  } | null>(null);
 
   // Gestion du drag & drop
   const handleDrag = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
+    e.preventDefault();
+    e.stopPropagation();
     if (e.type === 'dragenter' || e.type === 'dragover') {
-      setDragActive(true)
+      setDragActive(true);
     } else if (e.type === 'dragleave') {
-      setDragActive(false)
+      setDragActive(false);
     }
-  }
+  };
 
   const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setDragActive(false)
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActive(false);
 
-    const files = Array.from(e.dataTransfer.files)
+    const files = Array.from(e.dataTransfer.files);
     if (files.length > 0) {
-      setFile(files[0])
-      setStep('config')
+      setFile(files[0]);
+      setStep('config');
     }
-  }
+  };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.currentTarget.files
+    const files = e.currentTarget.files;
     if (files && files.length > 0) {
-      setFile(files[0])
-      setStep('config')
+      setFile(files[0]);
+      setStep('config');
     }
-  }
+  };
 
   const handleCreateLink = async (e: React.FormEvent) => {
-    e.preventDefault()
-    if (!file) return
+    e.preventDefault();
+    if (!file) return;
 
-    setLoading(true)
-    setError('')
+    setLoading(true);
+    setError('');
 
     try {
       // Étape 1: Uploader le fichier au serveur backend
-      const formData = new FormData()
-      formData.append('file', file)
+      const formData = new FormData();
+      formData.append('file', file);
 
-      const uploadResponse = await fetch('http://localhost:4000/api/public-links/upload', {
-        method: 'POST',
-        body: formData,
-      })
+      const uploadResponse = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL}/api/public-links/upload`,
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
 
       if (!uploadResponse.ok) {
-        throw new Error(`Upload failed: ${uploadResponse.statusText}`)
+        throw new Error(`Upload failed: ${uploadResponse.statusText}`);
       }
 
-      const uploadData = await uploadResponse.json()
-      
+      const uploadData = await uploadResponse.json();
+
       if (!uploadData.success) {
-        throw new Error(uploadData.message || 'Upload failed')
+        throw new Error(uploadData.message || 'Upload failed');
       }
 
       // Étape 2: Créer le lien public avec l'URL du fichier uploadé
       const expiresAt = useExpiration
         ? addDays(new Date(), parseInt(expiresIn)).toISOString()
-        : undefined
+        : undefined;
 
       const linkData = {
         fileUrl: uploadData.data.fileUrl,
@@ -109,9 +122,9 @@ export default function CreatePublicLinkForm({ onSuccess }: CreatePublicLinkForm
         password: usePassword ? password : undefined,
         expiresAt,
         maxDownloads: useDownloadLimit ? parseInt(maxDownloads) : undefined,
-      }
+      };
 
-      const link = await transferLinkAPI.createTransferLink(linkData)
+      const link = await transferLinkAPI.createTransferLink(linkData);
 
       setCreatedLink({
         id: link.id,
@@ -121,48 +134,50 @@ export default function CreatePublicLinkForm({ onSuccess }: CreatePublicLinkForm
         fileSize: uploadData.data.fileSize,
         expiresAt,
         maxDownloads: useDownloadLimit ? parseInt(maxDownloads) : undefined,
-      })
+      });
 
-      setStep('result')
+      setStep('result');
     } catch (err) {
-      const message = err instanceof Error ? err.message : 'Erreur lors de la création du lien'
-      setError(message)
-      console.error('Failed to create transfer link:', err)
+      const message = err instanceof Error ? err.message : 'Erreur lors de la création du lien';
+      setError(message);
+      console.error('Failed to create transfer link:', err);
     } finally {
-      setLoading(false)
+      setLoading(false);
     }
-  }
+  };
 
   const handleCopyLink = async () => {
-    if (!createdLink) return
+    if (!createdLink) return;
     try {
-      await navigator.clipboard.writeText(createdLink.shareUrl)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+      await navigator.clipboard.writeText(createdLink.shareUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
     } catch (err) {
-      console.error('Failed to copy:', err)
+      console.error('Failed to copy:', err);
     }
-  }
+  };
 
   const handleReset = () => {
-    setStep('upload')
-    setFile(null)
-    setCreatedLink(null)
-    setPassword('')
-    setError('')
-    setUsePassword(false)
-    setUseExpiration(true)
-    setUseDownloadLimit(false)
-    setExpiresIn('7')
-    setMaxDownloads('5')
-  }
+    setStep('upload');
+    setFile(null);
+    setCreatedLink(null);
+    setPassword('');
+    setError('');
+    setUsePassword(false);
+    setUseExpiration(true);
+    setUseDownloadLimit(false);
+    setExpiresIn('7');
+    setMaxDownloads('5');
+  };
 
   // STEP 1: Upload
   if (step === 'upload') {
     return (
       <div className="space-y-6">
         <div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-2">Étape 1: Sélectionner un fichier</h2>
+          <h2 className="text-2xl font-bold text-gray-900 mb-2">
+            Étape 1: Sélectionner un fichier
+          </h2>
           <p className="text-gray-600">Choisissez le fichier à partager publiquement</p>
         </div>
 
@@ -182,15 +197,12 @@ export default function CreatePublicLinkForm({ onSuccess }: CreatePublicLinkForm
           <p className="text-sm text-gray-600 mb-4">ou</p>
 
           <label>
-            <input
-              type="file"
-              onChange={handleFileSelect}
-              className="hidden"
-              accept="*/*"
-            />
+            <input type="file" onChange={handleFileSelect} className="hidden" accept="*/*" />
             <button
               type="button"
-              onClick={() => (document.querySelector('input[type="file"]') as HTMLInputElement)?.click()}
+              onClick={() =>
+                (document.querySelector('input[type="file"]') as HTMLInputElement)?.click()
+              }
               className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors"
             >
               Sélectionner un fichier
@@ -198,7 +210,7 @@ export default function CreatePublicLinkForm({ onSuccess }: CreatePublicLinkForm
           </label>
         </div>
       </div>
-    )
+    );
   }
 
   // STEP 2: Configuration
@@ -216,9 +228,7 @@ export default function CreatePublicLinkForm({ onSuccess }: CreatePublicLinkForm
             <div className="text-4xl">📄</div>
             <div className="flex-1">
               <p className="font-semibold text-gray-900">{file.name}</p>
-              <p className="text-sm text-gray-600">
-                {(file.size / 1024 / 1024).toFixed(2)} MB
-              </p>
+              <p className="text-sm text-gray-600">{(file.size / 1024 / 1024).toFixed(2)} MB</p>
             </div>
           </div>
         </div>
@@ -250,9 +260,7 @@ export default function CreatePublicLinkForm({ onSuccess }: CreatePublicLinkForm
 
             {usePassword && (
               <div className="ml-8 p-4 bg-gray-50 rounded-lg">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Mot de passe
-                </label>
+                <label className="block text-sm font-medium text-gray-700 mb-2">Mot de passe</label>
                 <div className="relative">
                   <input
                     type={showPassword ? 'text' : 'password'}
@@ -284,7 +292,10 @@ export default function CreatePublicLinkForm({ onSuccess }: CreatePublicLinkForm
                 onChange={(e) => setUseExpiration(e.target.checked)}
                 className="w-5 h-5 rounded border-gray-300 text-blue-600 cursor-pointer"
               />
-              <label htmlFor="useExpiration" className="font-medium text-gray-900 cursor-pointer flex items-center gap-2">
+              <label
+                htmlFor="useExpiration"
+                className="font-medium text-gray-900 cursor-pointer flex items-center gap-2"
+              >
                 <Calendar size={18} />
                 Définir une date d'expiration
               </label>
@@ -311,7 +322,9 @@ export default function CreatePublicLinkForm({ onSuccess }: CreatePublicLinkForm
                     <option>jours</option>
                   </select>
                   <div className="px-4 py-2 bg-blue-50 rounded-lg text-sm text-gray-600 whitespace-nowrap">
-                    {format(addDays(new Date(), parseInt(expiresIn)), 'dd MMM yyyy', { locale: fr })}
+                    {format(addDays(new Date(), parseInt(expiresIn)), 'dd MMM yyyy', {
+                      locale: fr,
+                    })}
                   </div>
                 </div>
               </div>
@@ -328,7 +341,10 @@ export default function CreatePublicLinkForm({ onSuccess }: CreatePublicLinkForm
                 onChange={(e) => setUseDownloadLimit(e.target.checked)}
                 className="w-5 h-5 rounded border-gray-300 text-blue-600 cursor-pointer"
               />
-              <label htmlFor="useDownloadLimit" className="font-medium text-gray-900 cursor-pointer flex items-center gap-2">
+              <label
+                htmlFor="useDownloadLimit"
+                className="font-medium text-gray-900 cursor-pointer flex items-center gap-2"
+              >
                 <Download size={18} />
                 Limiter le nombre de téléchargements
               </label>
@@ -377,7 +393,7 @@ export default function CreatePublicLinkForm({ onSuccess }: CreatePublicLinkForm
           </div>
         </form>
       </div>
-    )
+    );
   }
 
   // STEP 3: Résultat
@@ -387,7 +403,9 @@ export default function CreatePublicLinkForm({ onSuccess }: CreatePublicLinkForm
         <div className="text-center">
           <div className="text-6xl mb-4">🎉</div>
           <h2 className="text-3xl font-bold text-gray-900 mb-2">Lien créé avec succès!</h2>
-          <p className="text-gray-600">Partagez ce lien pour permettre à d'autres de télécharger le fichier</p>
+          <p className="text-gray-600">
+            Partagez ce lien pour permettre à d'autres de télécharger le fichier
+          </p>
         </div>
 
         {/* Infos du lien */}
@@ -457,8 +475,8 @@ export default function CreatePublicLinkForm({ onSuccess }: CreatePublicLinkForm
           {onSuccess && (
             <button
               onClick={() => {
-                handleReset()
-                onSuccess()
+                handleReset();
+                onSuccess();
               }}
               className="flex-1 px-6 py-3 bg-gray-100 hover:bg-gray-200 text-gray-900 rounded-lg font-medium transition-colors"
             >
@@ -467,8 +485,8 @@ export default function CreatePublicLinkForm({ onSuccess }: CreatePublicLinkForm
           )}
         </div>
       </div>
-    )
+    );
   }
 
-  return null
+  return null;
 }

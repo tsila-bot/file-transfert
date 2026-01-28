@@ -10,7 +10,7 @@ import { transferLinkAPI, TransferLink } from '@/core/services/api/transferLink.
 export default function PublicLinkPage() {
   const params = useParams();
   const shortCode = (params?.shortCode as string) || '';
-  
+
   const [linkInfo, setLinkInfo] = useState<TransferLink | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -26,10 +26,10 @@ export default function PublicLinkPage() {
       try {
         setLoading(true);
         const info = await transferLinkAPI.getPublicTransferInfo(shortCode);
-        
+
         // Vérifier si le lien a expiré
         if (info.expiresAt && new Date(info.expiresAt) < new Date()) {
-          setError('Ce lien a expiré et n\'est plus accessible.');
+          setError("Ce lien a expiré et n'est plus accessible.");
           return;
         }
 
@@ -40,7 +40,7 @@ export default function PublicLinkPage() {
         }
 
         setLinkInfo(info);
-        
+
         // Vérifier si le lien est protégé par mot de passe
         if (info.password) {
           setPasswordRequired(true);
@@ -49,7 +49,7 @@ export default function PublicLinkPage() {
           setIsUnlocked(true);
         }
       } catch (err) {
-        setError('Ce lien n\'existe pas ou n\'est pas accessible.');
+        setError("Ce lien n'existe pas ou n'est pas accessible.");
         console.error('Erreur lors du chargement du lien:', err);
       } finally {
         setLoading(false);
@@ -68,7 +68,7 @@ export default function PublicLinkPage() {
 
     try {
       const isValid = await transferLinkAPI.verifyTransferPassword(shortCode, password);
-      
+
       if (isValid) {
         setIsUnlocked(true);
         setPassword('');
@@ -89,7 +89,7 @@ export default function PublicLinkPage() {
       setDownloading(true);
 
       // Utiliser la route de téléchargement direct qui gère les headers correctement
-      window.location.href = `http://localhost:4000/api/public-links/${shortCode}/file`;
+      window.location.href = `${process.env.NEXT_PUBLIC_API_URL}/api/public-links/${shortCode}/file`;
     } catch (err) {
       setError('Erreur lors du téléchargement du fichier.');
       console.error('Erreur:', err);
@@ -141,16 +141,16 @@ export default function PublicLinkPage() {
                 <CheckCircle className="w-6 h-6 text-green-600 shrink-0 mt-0.5" />
                 <div>
                   <h3 className="font-semibold text-green-900">Lien accessible</h3>
-                  <p className="text-green-700 text-sm">Vous pouvez maintenant télécharger le fichier.</p>
+                  <p className="text-green-700 text-sm">
+                    Vous pouvez maintenant télécharger le fichier.
+                  </p>
                 </div>
               </div>
             )}
 
             {/* Informations du fichier */}
             <div className="mb-8">
-              <h1 className="text-3xl font-bold text-gray-900 mb-6">
-                {linkInfo.fileName}
-              </h1>
+              <h1 className="text-3xl font-bold text-gray-900 mb-6">{linkInfo.fileName}</h1>
 
               <div className="grid grid-cols-2 gap-4 mb-6">
                 <div className="bg-gray-50 p-4 rounded-lg">
@@ -208,9 +208,7 @@ export default function PublicLinkPage() {
                     />
                   </div>
 
-                  {passwordError && (
-                    <p className="text-sm text-red-600">{passwordError}</p>
-                  )}
+                  {passwordError && <p className="text-sm text-red-600">{passwordError}</p>}
 
                   <button
                     type="submit"
@@ -238,7 +236,8 @@ export default function PublicLinkPage() {
             {linkInfo.maxDownloads && linkInfo.downloads >= linkInfo.maxDownloads - 1 && (
               <div className="mt-6 p-4 bg-orange-50 border border-orange-200 rounded-lg">
                 <p className="text-sm text-orange-800">
-                  ⚠️ <strong>Attention:</strong> Ce lien atteindra bientôt sa limite de téléchargements.
+                  ⚠️ <strong>Attention:</strong> Ce lien atteindra bientôt sa limite de
+                  téléchargements.
                 </p>
               </div>
             )}
@@ -247,7 +246,9 @@ export default function PublicLinkPage() {
           {/* Footer */}
           <div className="mt-8 text-center text-gray-600 text-sm">
             <p>Lien de partage de fichier</p>
-            <p className="text-gray-500">Code d'accès: <code className="bg-gray-100 px-2 py-1 rounded">{shortCode}</code></p>
+            <p className="text-gray-500">
+              Code d'accès: <code className="bg-gray-100 px-2 py-1 rounded">{shortCode}</code>
+            </p>
           </div>
         </div>
       </div>

@@ -1,9 +1,11 @@
 // next.config.js
-
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
   swcMinify: true,
+
+  // IMPORTANT : Active le mode standalone pour Docker
+  output: 'standalone',
 
   // Variables d'environnement exposées au client
   env: {
@@ -13,7 +15,16 @@ const nextConfig = {
 
   // Configuration des images
   images: {
-    domains: ['localhost', 'api.APPWEBP2P.webdevin.com'],
+    remotePatterns: [
+      {
+        protocol: 'http',
+        hostname: 'localhost',
+      },
+      {
+        protocol: 'https',
+        hostname: 'appwebp2pbackend.onrender.com',
+      },
+    ],
   },
 
   // Headers de sécurité
